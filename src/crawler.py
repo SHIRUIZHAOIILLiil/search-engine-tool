@@ -32,11 +32,13 @@ class QuoteCrawler:
         politeness_delay: float = 6.0,
         timeout: float = 10.0,
         sleep: Callable[[float], None] = time.sleep,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.start_url = start_url
         self.politeness_delay = politeness_delay
         self.timeout = timeout
         self._sleep = sleep
+        self._progress_callback = progress_callback
 
     def crawl(self, max_pages: int | None = None) -> list[CrawledPage]:
         """Crawl quote pages and return their quote text."""
@@ -49,12 +51,15 @@ class QuoteCrawler:
                 break
 
             if pages:
+                self._report(f"Waiting {self.politeness_delay:.0f} seconds before next request...")
                 self._sleep(self.politeness_delay)
 
+            self._report(f"Crawling {next_url}")
             html = self._fetch(next_url)
             page, next_url = self._parse_page(next_url, html)
             pages.append(page)
             visited.add(page.url)
+            self._report(f"Collected page {len(pages)}: {page.url}")
 
         return pages
 
@@ -72,6 +77,10 @@ class QuoteCrawler:
         next_link = soup.select_one("li.next a")
         next_url = urljoin(url, next_link["href"]) if next_link and next_link.get("href") else None
         return CrawledPage(url=url, text=" ".join(quotes)), next_url
+
+    def _report(self, message: str) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(message)
 
 
 def crawl_site(start_url: str = "https://quotes.toscrape.com/") -> Iterable[CrawledPage]:

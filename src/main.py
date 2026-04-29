@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import shlex
+from pathlib import Path
 
 from src.crawler import CrawlerError, QuoteCrawler
 from src.indexer import InvertedIndex, build_index, load_index, save_index
 from src.search import find_pages, print_word
 
-DEFAULT_INDEX_PATH = "data/index.json"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_INDEX_PATH = PROJECT_ROOT / "data" / "index.json"
 
 
 def run_shell() -> None:
@@ -47,8 +49,10 @@ def handle_command(raw_command: str, index: InvertedIndex) -> InvertedIndex:
         print_help()
         return index
     if command == "build":
-        crawler = QuoteCrawler()
+        print("Starting crawl. This will take about one minute because of the 6-second politeness delay.")
+        crawler = QuoteCrawler(progress_callback=lambda message: print(message, flush=True))
         pages = crawler.crawl()
+        print("Building inverted index...")
         index = build_index(pages)
         save_index(index, DEFAULT_INDEX_PATH)
         print(f"Built index for {len(pages)} pages and saved it to {DEFAULT_INDEX_PATH}.")
