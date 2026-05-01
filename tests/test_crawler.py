@@ -1,6 +1,10 @@
 ﻿import unittest
 
-from src.crawler import QuoteCrawler
+from unittest.mock import Mock, patch
+
+import requests
+
+from src.crawler import CrawlerError, QuoteCrawler
 
 
 class QuoteCrawlerTests(unittest.TestCase):
@@ -57,6 +61,78 @@ class QuoteCrawlerTests(unittest.TestCase):
 
         self.assertEqual(page.text, "First quote. Second quote. Third quote.")
         self.assertIsNone(next_url)
+
+    def test_crawl_follows_next_links_without_real_network(self):
+        html_by_url = {
+            "https://quotes.toscrape.com/": """
+                <div class="quote"><span class="text">First page.</span></div>
+                <li class="next"><a href="/page/2/">Next</a></li>
+            """,
+            "https://quotes.toscrape.com/page/2/": """
+                <div class="quote"><span class="text">Second page.</span></div>
+            """,
+        }
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/", sleep=lambda _: None)
+        crawler._fetch = lambda url: html_by_url[url]
+
+        pages = crawler.crawl()
+
+        self.assertEqual(
+            [page.url for page in pages],
+            ["https://quotes.toscrape.com/", "https://quotes.toscrape.com/page/2/"],
+        )
+        self.assertEqual([page.text for page in pages], ["First page.", "Second page."])
+
+    def test_crawl_waits_between_successive_requests(self):
+        html_by_url = {
+            "https://quotes.toscrape.com/": """
+                <div class="quote"><span class="text">First page.</span></div>
+                <li class="next"><a href="/page/2/">Next</a></li>
+            """,
+            "https://quotes.toscrape.com/page/2/": """
+                <div class="quote"><span class="text">Second page.</span></div>
+            """,
+        }
+        waits = []
+        crawler = QuoteCrawler(
+            start_url="https://quotes.toscrape.com/",
+            politeness_delay=6.0,
+            sleep=waits.append,
+        )
+        crawler._fetch = lambda url: html_by_url[url]
+
+        crawler.crawl()
+
+        self.assertEqual(waits, [6.0])
+
+    def test_crawl_respects_max_pages(self):
+        html = """
+        <div class="quote"><span class="text">First page.</span></div>
+        <li class="next"><a href="/page/2/">Next</a></li>
+        """
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/", sleep=lambda _: None)
+        crawler._fetch = Mock(return_value=html)
+
+        pages = crawler.crawl(max_pages=1)
+
+        self.assertEqual(len(pages), 1)
+        crawler._fetch.assert_called_once_with("https://quotes.toscrape.com/")
+
+    def test_fetch_wraps_request_errors(self):
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        with patch("src.crawler.requests.get", side_effect=requests.RequestException("network down")):
+            with self.assertRaises(CrawlerError):
+                crawler._fetch("https://quotes.toscrape.com/")
+
+    def test_fetch_wraps_http_status_errors(self):
+        response = Mock()
+        response.raise_for_status.side_effect = requests.HTTPError("500 error")
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        with patch("src.crawler.requests.get", return_value=response):
+            with self.assertRaises(CrawlerError):
+                crawler._fetch("https://quotes.toscrape.com/")
 
 
 if __name__ == "__main__":
