@@ -1,7 +1,9 @@
 ﻿import unittest
 
+from tempfile import TemporaryDirectory
+
 from src.crawler import CrawledPage
-from src.indexer import build_index, tokenize
+from src.indexer import build_index, load_index, save_index, tokenize
 
 
 class IndexerTests(unittest.TestCase):
@@ -45,6 +47,29 @@ class IndexerTests(unittest.TestCase):
         index = build_index(pages)
 
         self.assertEqual(index, {})
+
+    def test_save_and_load_index_round_trip(self):
+        index = {
+            "good": {
+                "page-1": {"frequency": 2, "positions": [0, 3]},
+            },
+        }
+
+        with TemporaryDirectory() as temporary_directory:
+            path = f"{temporary_directory}/index.json"
+
+            save_index(index, path)
+            loaded_index = load_index(path)
+
+        self.assertEqual(loaded_index, index)
+
+    def test_load_index_raises_error_for_missing_file(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = f"{temporary_directory}/missing.json"
+
+            with self.assertRaises(FileNotFoundError):
+                load_index(path)
+
 
 if __name__ == "__main__":
     unittest.main()
