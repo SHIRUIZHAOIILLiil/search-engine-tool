@@ -90,16 +90,34 @@ class MainCommandTests(unittest.TestCase):
         crawler.crawl.return_value = pages
         output = io.StringIO()
 
-        with patch("src.main.QuoteCrawler", return_value=crawler):
-            with patch("src.main.build_index", return_value=built_index) as build_index:
-                with patch("src.main.save_index") as save_index:
-                    with redirect_stdout(output):
-                        returned_index = handle_command("build", {})
+        with patch("src.main.RobotsPolicy.from_url", return_value=Mock()):
+            with patch("src.main.QuoteCrawler", return_value=crawler):
+                with patch("src.main.build_index", return_value=built_index) as build_index:
+                    with patch("src.main.save_index") as save_index:
+                        with redirect_stdout(output):
+                            returned_index = handle_command("build", {})
 
         self.assertEqual(returned_index, built_index)
         build_index.assert_called_once_with(pages)
         save_index.assert_called_once()
         self.assertIn("Built index", output.getvalue())
+
+    def test_build_command_fetches_robots_policy_for_target_site(self):
+        crawler = Mock()
+        crawler.crawl.return_value = []
+        policy = Mock()
+
+        with patch("src.main.RobotsPolicy.from_url", return_value=policy) as from_url:
+            with patch("src.main.QuoteCrawler", return_value=crawler) as quote_crawler:
+                with patch("src.main.build_index", return_value={}):
+                    with patch("src.main.save_index"):
+                        with redirect_stdout(io.StringIO()):
+                            handle_command("build", {})
+
+        from_url.assert_called_once()
+        self.assertEqual(from_url.call_args.args[0], "https://quotes.toscrape.com/")
+        # The policy must be threaded into the crawler so it can gate fetches.
+        self.assertIs(quote_crawler.call_args.kwargs["robots_policy"], policy)
 
 
 if __name__ == "__main__":

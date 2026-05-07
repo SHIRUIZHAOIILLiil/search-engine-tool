@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
+from src.robots import RobotsPolicy
 
 
 class QuoteCrawlerTests(unittest.TestCase):
@@ -172,6 +173,79 @@ class QuoteCrawlerTests(unittest.TestCase):
                 "https://quotes.toscrape.com/A/",
             ],
         )
+
+    def test_default_robots_policy_is_permissive(self):
+        crawler = QuoteCrawler(start_url="https://example.com/")
+
+        self.assertTrue(crawler.robots_policy.is_allowed("https://example.com/anything"))
+        self.assertIsNone(crawler.robots_policy.crawl_delay())
+
+    def test_crawl_skips_urls_disallowed_by_robots(self):
+        robots_txt = "User-agent: *\nDisallow: /private/\n"
+        policy = RobotsPolicy.from_text(robots_txt, DEFAULT_USER_AGENT)
+
+        html_by_url = {
+            "https://quotes.toscrape.com/": (
+                '<a href="/private/secret/">Private</a>'
+                '<a href="/public/">Public</a>'
+            ),
+            "https://quotes.toscrape.com/public/": "",
+        }
+        crawler = QuoteCrawler(
+            start_url="https://quotes.toscrape.com/",
+            robots_policy=policy,
+            sleep=lambda _: None,
+        )
+        crawler._fetch = lambda url: html_by_url[url]
+
+        pages = crawler.crawl()
+
+        urls = [page.url for page in pages]
+        self.assertIn("https://quotes.toscrape.com/", urls)
+        self.assertIn("https://quotes.toscrape.com/public/", urls)
+        self.assertNotIn("https://quotes.toscrape.com/private/secret/", urls)
+
+    def test_crawl_uses_robots_crawl_delay_when_larger_than_politeness(self):
+        robots_txt = "User-agent: *\nCrawl-delay: 10\n"
+        policy = RobotsPolicy.from_text(robots_txt, DEFAULT_USER_AGENT)
+
+        html_by_url = {
+            "https://example.com/": '<a href="/page2/">Next</a>',
+            "https://example.com/page2/": "",
+        }
+        waits: list[float] = []
+        crawler = QuoteCrawler(
+            start_url="https://example.com/",
+            politeness_delay=6.0,
+            robots_policy=policy,
+            sleep=waits.append,
+        )
+        crawler._fetch = lambda url: html_by_url[url]
+
+        crawler.crawl()
+
+        self.assertEqual(waits, [10.0])
+
+    def test_crawl_keeps_politeness_when_robots_delay_is_smaller(self):
+        robots_txt = "User-agent: *\nCrawl-delay: 2\n"
+        policy = RobotsPolicy.from_text(robots_txt, DEFAULT_USER_AGENT)
+
+        html_by_url = {
+            "https://example.com/": '<a href="/page2/">Next</a>',
+            "https://example.com/page2/": "",
+        }
+        waits: list[float] = []
+        crawler = QuoteCrawler(
+            start_url="https://example.com/",
+            politeness_delay=6.0,
+            robots_policy=policy,
+            sleep=waits.append,
+        )
+        crawler._fetch = lambda url: html_by_url[url]
+
+        crawler.crawl()
+
+        self.assertEqual(waits, [6.0])
 
     def test_fetch_wraps_request_errors(self):
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")

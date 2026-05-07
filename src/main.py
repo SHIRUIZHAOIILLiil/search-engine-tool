@@ -6,12 +6,14 @@ import json
 import shlex
 from pathlib import Path
 
-from src.crawler import CrawlerError, QuoteCrawler
+from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
 from src.indexer import InvertedIndex, build_index, load_index, save_index
+from src.robots import RobotsPolicy
 from src.search import find_pages, print_word
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INDEX_PATH = PROJECT_ROOT / "data" / "index.json"
+TARGET_URL = "https://quotes.toscrape.com/"
 
 
 def run_shell() -> None:
@@ -49,8 +51,14 @@ def handle_command(raw_command: str, index: InvertedIndex) -> InvertedIndex:
         print_help()
         return index
     if command == "build":
+        print("Fetching robots.txt...")
+        robots_policy = RobotsPolicy.from_url(TARGET_URL, DEFAULT_USER_AGENT)
         print("Starting crawl. This will take about one minute because of the 6-second politeness delay.")
-        crawler = QuoteCrawler(progress_callback=lambda message: print(message, flush=True))
+        crawler = QuoteCrawler(
+            start_url=TARGET_URL,
+            robots_policy=robots_policy,
+            progress_callback=lambda message: print(message, flush=True),
+        )
         pages = crawler.crawl()
         print("Building inverted index...")
         index = build_index(pages)

@@ -8,7 +8,11 @@ depending on the standard library type directly.
 
 from __future__ import annotations
 
+from typing import Callable
+from urllib.parse import urljoin
 from urllib.robotparser import RobotFileParser
+
+import requests
 
 
 class RobotsPolicy:
@@ -36,6 +40,38 @@ class RobotsPolicy:
         parser = RobotFileParser()
         parser.parse(robots_txt.splitlines())
         return cls(parser, user_agent)
+
+    @classmethod
+    def from_url(
+        cls,
+        start_url: str,
+        user_agent: str,
+        fetch: Callable[[str], str] | None = None,
+    ) -> "RobotsPolicy":
+        """Fetch ``/robots.txt`` from the start URL's host and parse it.
+
+        Per the robots.txt specification, an unreachable robots.txt is
+        equivalent to "no restrictions", so any fetch failure (network
+        error, 404, malformed response, etc.) falls back to a permissive
+        policy. The ``fetch`` parameter is for injecting a stub in tests;
+        production callers leave it as None to use the default HTTP fetch.
+        """
+        if fetch is None:
+            def fetch(url: str) -> str:
+                response = requests.get(
+                    url,
+                    headers={"User-Agent": user_agent},
+                    timeout=10.0,
+                )
+                response.raise_for_status()
+                return response.text
+
+        robots_url = urljoin(start_url, "/robots.txt")
+        try:
+            text = fetch(robots_url)
+        except Exception:
+            return cls.permissive(user_agent)
+        return cls.from_text(text, user_agent)
 
     def is_allowed(self, url: str) -> bool:
         """Return True if the user agent is allowed to fetch ``url``."""
