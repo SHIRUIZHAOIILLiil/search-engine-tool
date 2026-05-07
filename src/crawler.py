@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Iterable
 from urllib.parse import urljoin, urlparse
@@ -56,25 +57,42 @@ class QuoteCrawler:
         self._progress_callback = progress_callback
 
     def crawl(self, max_pages: int | None = None) -> list[CrawledPage]:
-        """Crawl quote pages and return their quote text."""
-        pages: list[CrawledPage] = []
-        next_url: str | None = self.start_url
-        visited: set[str] = set()
+        """Crawl pages reachable from the start URL using BFS over the link graph.
 
-        while next_url and next_url not in visited:
+        Implements the seeds → frontier → fetch → parse-for-links loop from
+        Lecture 9. The frontier is a FIFO queue of ``(url, depth)`` pairs, so
+        pages are visited in breadth-first order. ``max_depth`` (set on the
+        crawler) bounds how far we descend; ``max_pages`` bounds how many
+        pages we collect per call.
+        """
+        pages: list[CrawledPage] = []
+        visited: set[str] = set()
+        frontier: deque[tuple[str, int]] = deque()
+        frontier.append((self.start_url, 0))
+
+        while frontier:
             if max_pages is not None and len(pages) >= max_pages:
                 break
+
+            url, depth = frontier.popleft()
+            if url in visited:
+                continue
 
             if pages:
                 self._report(f"Waiting {self.politeness_delay:.0f} seconds before next request...")
                 self._sleep(self.politeness_delay)
 
-            self._report(f"Crawling {next_url}")
-            html = self._fetch(next_url)
-            page, next_url = self._parse_page(next_url, html)
+            self._report(f"Crawling {url}")
+            html = self._fetch(url)
+            page = self._parse_page(url, html)
             pages.append(page)
-            visited.add(page.url)
+            visited.add(url)
             self._report(f"Collected page {len(pages)}: {page.url}")
+
+            if self.max_depth is None or depth < self.max_depth:
+                for link in self._extract_links(url, html):
+                    if link not in visited:
+                        frontier.append((link, depth + 1))
 
         return pages
 
@@ -90,12 +108,10 @@ class QuoteCrawler:
             raise CrawlerError(f"Failed to crawl {url}: {exc}") from exc
         return response.text
 
-    def _parse_page(self, url: str, html: str) -> tuple[CrawledPage, str | None]:
+    def _parse_page(self, url: str, html: str) -> CrawledPage:
         soup = BeautifulSoup(html, "html.parser")
         quotes = [quote.get_text(" ", strip=True) for quote in soup.select(".quote .text")]
-        next_link = soup.select_one("li.next a")
-        next_url = urljoin(url, next_link["href"]) if next_link and next_link.get("href") else None
-        return CrawledPage(url=url, text=" ".join(quotes)), next_url
+        return CrawledPage(url=url, text=" ".join(quotes))
 
     def _extract_links(self, base_url: str, html: str) -> list[str]:
         """Return absolute, deduplicated, same-host links from a page.

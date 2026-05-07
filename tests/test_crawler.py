@@ -8,44 +8,28 @@ from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
 
 
 class QuoteCrawlerTests(unittest.TestCase):
-    def test_parse_page_extracts_quotes_and_next_link(self):
+    def test_parse_page_extracts_quotes(self):
         html = """
         <html>
           <div class="quote"><span class="text">First quote.</span></div>
           <div class="quote"><span class="text">Second quote.</span></div>
-          <li class="next"><a href="/page/2/">Next</a></li>
         </html>
         """
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
 
-        page, next_url = crawler._parse_page("https://quotes.toscrape.com/", html)
+        page = crawler._parse_page("https://quotes.toscrape.com/", html)
 
         self.assertEqual(page.url, "https://quotes.toscrape.com/")
         self.assertIn("First quote.", page.text)
         self.assertIn("Second quote.", page.text)
-        self.assertEqual(next_url, "https://quotes.toscrape.com/page/2/")
-
-    def test_parse_page_handles_missing_next_link(self):
-        html = """
-        <html>
-          <div class="quote"><span class="text">Only quote.</span></div>
-        </html>
-        """
-        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
-
-        page, next_url = crawler._parse_page("https://quotes.toscrape.com/", html)
-
-        self.assertEqual(page.text, "Only quote.")
-        self.assertIsNone(next_url)
 
     def test_parse_page_handles_page_without_quotes(self):
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
 
-        page, next_url = crawler._parse_page("https://quotes.toscrape.com/", "<html></html>")
+        page = crawler._parse_page("https://quotes.toscrape.com/", "<html></html>")
 
         self.assertEqual(page.url, "https://quotes.toscrape.com/")
         self.assertEqual(page.text, "")
-        self.assertIsNone(next_url)
 
     def test_parse_page_combines_multiple_quotes_in_order(self):
         html = """
@@ -57,10 +41,9 @@ class QuoteCrawlerTests(unittest.TestCase):
         """
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
 
-        page, next_url = crawler._parse_page("https://quotes.toscrape.com/", html)
+        page = crawler._parse_page("https://quotes.toscrape.com/", html)
 
         self.assertEqual(page.text, "First quote. Second quote. Third quote.")
-        self.assertIsNone(next_url)
 
     def test_crawl_follows_next_links_without_real_network(self):
         html_by_url = {
@@ -117,6 +100,78 @@ class QuoteCrawlerTests(unittest.TestCase):
 
         self.assertEqual(len(pages), 1)
         crawler._fetch.assert_called_once_with("https://quotes.toscrape.com/")
+
+    def test_crawl_traverses_in_bfs_order(self):
+        html_by_url = {
+            "https://quotes.toscrape.com/": """
+                <a href="/page/A/">A</a>
+                <a href="/page/B/">B</a>
+            """,
+            "https://quotes.toscrape.com/page/A/": """
+                <a href="/page/A1/">A1</a>
+            """,
+            "https://quotes.toscrape.com/page/B/": """
+                <a href="/page/B1/">B1</a>
+            """,
+            "https://quotes.toscrape.com/page/A1/": "",
+            "https://quotes.toscrape.com/page/B1/": "",
+        }
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/", sleep=lambda _: None)
+        crawler._fetch = lambda url: html_by_url[url]
+
+        pages = crawler.crawl()
+
+        self.assertEqual(
+            [page.url for page in pages],
+            [
+                "https://quotes.toscrape.com/",
+                "https://quotes.toscrape.com/page/A/",
+                "https://quotes.toscrape.com/page/B/",
+                "https://quotes.toscrape.com/page/A1/",
+                "https://quotes.toscrape.com/page/B1/",
+            ],
+        )
+
+    def test_crawl_skips_already_visited_urls(self):
+        html_by_url = {
+            "https://quotes.toscrape.com/": '<a href="/B/">B</a>',
+            "https://quotes.toscrape.com/B/": '<a href="https://quotes.toscrape.com/">Back</a>',
+        }
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/", sleep=lambda _: None)
+        crawler._fetch = lambda url: html_by_url[url]
+
+        pages = crawler.crawl()
+
+        self.assertEqual(
+            [page.url for page in pages],
+            [
+                "https://quotes.toscrape.com/",
+                "https://quotes.toscrape.com/B/",
+            ],
+        )
+
+    def test_crawl_respects_max_depth(self):
+        html_by_url = {
+            "https://quotes.toscrape.com/": '<a href="/A/">A</a>',
+            "https://quotes.toscrape.com/A/": '<a href="/A1/">A1</a>',
+            "https://quotes.toscrape.com/A1/": '<a href="/A2/">A2</a>',
+        }
+        crawler = QuoteCrawler(
+            start_url="https://quotes.toscrape.com/",
+            max_depth=1,
+            sleep=lambda _: None,
+        )
+        crawler._fetch = lambda url: html_by_url[url]
+
+        pages = crawler.crawl()
+
+        self.assertEqual(
+            [page.url for page in pages],
+            [
+                "https://quotes.toscrape.com/",
+                "https://quotes.toscrape.com/A/",
+            ],
+        )
 
     def test_fetch_wraps_request_errors(self):
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
