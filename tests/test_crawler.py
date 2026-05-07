@@ -77,6 +77,30 @@ class QuoteCrawlerTests(unittest.TestCase):
         self.assertNotIn("alert", page.text)
         self.assertNotIn("secret", page.text)
 
+    def test_parse_page_attaches_structured_fields_to_crawled_page(self):
+        html = """
+        <html>
+          <head><title>Quotes to Scrape</title></head>
+          <body>
+            <div class="quote">
+              <span class="text">"A quote."</span>
+              <span><small class="author">Einstein</small></span>
+              <div class="tags"><a class="tag">science</a></div>
+            </div>
+          </body>
+        </html>
+        """
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        page = crawler._parse_page("https://quotes.toscrape.com/", html)
+
+        self.assertEqual(page.fields.title, "Quotes to Scrape")
+        self.assertEqual(page.fields.quote_texts, ['"A quote."'])
+        self.assertEqual(page.fields.authors, ["Einstein"])
+        self.assertEqual(page.fields.tags, ["science"])
+        # text remains the concatenated body for backward compatibility.
+        self.assertEqual(page.text, page.fields.body)
+
     def test_parse_page_combines_multiple_quotes_in_order(self):
         html = """
         <html>
