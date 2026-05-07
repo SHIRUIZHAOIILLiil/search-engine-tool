@@ -146,6 +146,19 @@ class QuoteCrawlerTests(unittest.TestCase):
         _, kwargs = mock_get.call_args
         self.assertEqual(kwargs["headers"]["User-Agent"], DEFAULT_USER_AGENT)
 
+    def test_max_depth_defaults_to_none(self):
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        self.assertIsNone(crawler.max_depth)
+
+    def test_max_depth_can_be_set_via_init(self):
+        crawler = QuoteCrawler(
+            start_url="https://quotes.toscrape.com/",
+            max_depth=5,
+        )
+
+        self.assertEqual(crawler.max_depth, 5)
+
     def test_fetch_uses_custom_user_agent_when_provided(self):
         response = Mock()
         response.text = ""

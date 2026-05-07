@@ -40,13 +40,18 @@ class QuoteCrawler:
         politeness_delay: float = 6.0,
         timeout: float = 10.0,
         user_agent: str = DEFAULT_USER_AGENT,
+        max_depth: int | None = None,
         sleep: Callable[[float], None] = time.sleep,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
+        # max_depth bounds how far the crawler descends from the seed URLs
+        # (Lecture 9: defence against fictitious-resource traps that would
+        # otherwise cause infinite recursion). None disables the limit.
         self.start_url = start_url
         self.politeness_delay = politeness_delay
         self.timeout = timeout
         self.user_agent = user_agent
+        self.max_depth = max_depth
         self._sleep = sleep
         self._progress_callback = progress_callback
 
