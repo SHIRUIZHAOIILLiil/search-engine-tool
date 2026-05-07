@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable
 from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
-from src.parser import parse_html_to_text
+from src.parser import ParsedFields, parse_html_to_fields
 from src.robots import RobotsPolicy
 
 # Identifies the crawler to web servers (Lecture 9: "User-Agent" HTTP header).
@@ -25,10 +25,17 @@ DEFAULT_USER_AGENT = (
 
 @dataclass(frozen=True)
 class CrawledPage:
-    """Text content collected from one crawled page."""
+    """Text content collected from one crawled page.
+
+    ``text`` is the concatenated body (kept as the primary attribute so
+    existing index/search code keeps working). ``fields`` carries the
+    same content split per Lecture 11 structural slots (title, quote
+    text, author, tags) so future rankers can weight them differently.
+    """
 
     url: str
     text: str
+    fields: ParsedFields = field(default_factory=ParsedFields)
 
 
 class CrawlerError(RuntimeError):
@@ -131,9 +138,12 @@ class QuoteCrawler:
         Delegates HTML-to-text conversion to :mod:`src.parser` so the
         crawler stays focused on fetch, queue, and politeness concerns
         while parsing logic lives in its own module (Lecture 11 two-pass
-        tokenisation).
+        tokenisation). The structured ``ParsedFields`` is attached to
+        the returned page so downstream consumers (indexer, ranker) can
+        access per-field text.
         """
-        return CrawledPage(url=url, text=parse_html_to_text(html))
+        fields = parse_html_to_fields(html)
+        return CrawledPage(url=url, text=fields.body, fields=fields)
 
     def _extract_links(self, base_url: str, html: str) -> list[str]:
         """Return absolute, deduplicated, same-host links from a page.
