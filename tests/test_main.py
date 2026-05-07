@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
 from src.crawler import CrawledPage
+from src.indexer import Index
 from src.main import handle_command
 
 
@@ -12,34 +13,34 @@ class MainCommandTests(unittest.TestCase):
         output = io.StringIO()
 
         with redirect_stdout(output):
-            returned_index = handle_command("help", {})
+            returned_index = handle_command("help", Index())
 
-        self.assertEqual(returned_index, {})
+        self.assertEqual(returned_index, Index())
         self.assertIn("build", output.getvalue())
         self.assertIn("find <query>", output.getvalue())
 
     def test_unknown_command_raises_value_error(self):
         with self.assertRaises(ValueError):
-            handle_command("unknown", {})
+            handle_command("unknown", Index())
 
     def test_exit_command_raises_system_exit(self):
         with self.assertRaises(SystemExit):
-            handle_command("exit", {})
+            handle_command("exit", Index())
 
     def test_quit_command_raises_system_exit(self):
         with self.assertRaises(SystemExit):
-            handle_command("quit", {})
+            handle_command("quit", Index())
 
     def test_print_command_requires_word_argument(self):
         with self.assertRaises(ValueError):
-            handle_command("print", {})
+            handle_command("print", Index())
 
     def test_find_command_requires_query_argument(self):
         with self.assertRaises(ValueError):
-            handle_command("find", {})
+            handle_command("find", Index())
 
     def test_print_command_outputs_posting_list(self):
-        index = {"good": {"page-1": {"frequency": 1, "positions": [0]}}}
+        index = Index(data={"good": {"page-1": {"frequency": 1, "positions": [0]}}})
         output = io.StringIO()
 
         with redirect_stdout(output):
@@ -50,10 +51,12 @@ class MainCommandTests(unittest.TestCase):
         self.assertIn('"page-1"', output.getvalue())
 
     def test_find_command_outputs_matching_pages(self):
-        index = {
-            "good": {"page-1": {"frequency": 1, "positions": [0]}},
-            "friends": {"page-1": {"frequency": 1, "positions": [1]}},
-        }
+        index = Index(
+            data={
+                "good": {"page-1": {"frequency": 1, "positions": [0]}},
+                "friends": {"page-1": {"frequency": 1, "positions": [1]}},
+            },
+        )
         output = io.StringIO()
 
         with redirect_stdout(output):
@@ -66,18 +69,18 @@ class MainCommandTests(unittest.TestCase):
         output = io.StringIO()
 
         with redirect_stdout(output):
-            returned_index = handle_command("find missing", {})
+            returned_index = handle_command("find missing", Index())
 
-        self.assertEqual(returned_index, {})
+        self.assertEqual(returned_index, Index())
         self.assertIn("No matching pages found.", output.getvalue())
 
     def test_load_command_returns_loaded_index(self):
-        loaded_index = {"good": {"page-1": {"frequency": 1, "positions": [0]}}}
+        loaded_index = Index(data={"good": {"page-1": {"frequency": 1, "positions": [0]}}})
         output = io.StringIO()
 
         with patch("src.main.load_index", return_value=loaded_index) as load_index:
             with redirect_stdout(output):
-                returned_index = handle_command("load", {})
+                returned_index = handle_command("load", Index())
 
         self.assertEqual(returned_index, loaded_index)
         load_index.assert_called_once()
@@ -85,7 +88,7 @@ class MainCommandTests(unittest.TestCase):
 
     def test_build_command_crawls_indexes_and_saves(self):
         pages = [CrawledPage(url="page-1", text="good friends")]
-        built_index = {"good": {"page-1": {"frequency": 1, "positions": [0]}}}
+        built_index = Index(data={"good": {"page-1": {"frequency": 1, "positions": [0]}}})
         crawler = Mock()
         crawler.crawl.return_value = pages
         output = io.StringIO()
@@ -95,7 +98,7 @@ class MainCommandTests(unittest.TestCase):
                 with patch("src.main.build_index", return_value=built_index) as build_index:
                     with patch("src.main.save_index") as save_index:
                         with redirect_stdout(output):
-                            returned_index = handle_command("build", {})
+                            returned_index = handle_command("build", Index())
 
         self.assertEqual(returned_index, built_index)
         build_index.assert_called_once_with(pages)
@@ -109,14 +112,13 @@ class MainCommandTests(unittest.TestCase):
 
         with patch("src.main.RobotsPolicy.from_url", return_value=policy) as from_url:
             with patch("src.main.QuoteCrawler", return_value=crawler) as quote_crawler:
-                with patch("src.main.build_index", return_value={}):
+                with patch("src.main.build_index", return_value=Index()):
                     with patch("src.main.save_index"):
                         with redirect_stdout(io.StringIO()):
-                            handle_command("build", {})
+                            handle_command("build", Index())
 
         from_url.assert_called_once()
         self.assertEqual(from_url.call_args.args[0], "https://quotes.toscrape.com/")
-        # The policy must be threaded into the crawler so it can gate fetches.
         self.assertIs(quote_crawler.call_args.kwargs["robots_policy"], policy)
 
 

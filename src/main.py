@@ -7,7 +7,7 @@ import shlex
 from pathlib import Path
 
 from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
-from src.indexer import InvertedIndex, build_index, load_index, save_index
+from src.indexer import Index, build_index, load_index, save_index
 from src.robots import RobotsPolicy
 from src.search import find_pages, print_word
 
@@ -18,7 +18,7 @@ TARGET_URL = "https://quotes.toscrape.com/"
 
 def run_shell() -> None:
     """Run the interactive command shell."""
-    index: InvertedIndex = {}
+    index: Index = Index()
 
     print("Search Engine Tool. Type 'help' for commands or 'exit' to quit.")
     while True:
@@ -39,7 +39,7 @@ def run_shell() -> None:
             break
 
 
-def handle_command(raw_command: str, index: InvertedIndex) -> InvertedIndex:
+def handle_command(raw_command: str, index: Index) -> Index:
     """Handle one command and return the current index."""
     parts = shlex.split(raw_command)
     command = parts[0].lower()
