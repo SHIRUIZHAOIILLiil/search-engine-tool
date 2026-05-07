@@ -11,6 +11,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from src.robots import RobotsPolicy
+
 # Identifies the crawler to web servers (Lecture 9: "User-Agent" HTTP header).
 # The "+url" suffix is the conventional way for a crawler to advertise a
 # contact / project link so that server administrators can reach the operator.
@@ -42,6 +44,7 @@ class QuoteCrawler:
         timeout: float = 10.0,
         user_agent: str = DEFAULT_USER_AGENT,
         max_depth: int | None = None,
+        robots_policy: RobotsPolicy | None = None,
         sleep: Callable[[float], None] = time.sleep,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -53,6 +56,10 @@ class QuoteCrawler:
         self.timeout = timeout
         self.user_agent = user_agent
         self.max_depth = max_depth
+        # Default to a permissive policy so that unit tests and direct uses
+        # of the crawler don't trigger network calls; production callers
+        # build a real policy with RobotsPolicy.from_text/from_url.
+        self.robots_policy = robots_policy if robots_policy is not None else RobotsPolicy.permissive()
         self._sleep = sleep
         self._progress_callback = progress_callback
 
@@ -70,6 +77,11 @@ class QuoteCrawler:
         frontier: deque[tuple[str, int]] = deque()
         frontier.append((self.start_url, 0))
 
+        # Effective delay honours both the brief's 6-second floor and any
+        # Crawl-delay declared in robots.txt — whichever is larger wins.
+        crawl_delay = self.robots_policy.crawl_delay()
+        effective_delay = max(self.politeness_delay, crawl_delay or 0.0)
+
         while frontier:
             if max_pages is not None and len(pages) >= max_pages:
                 break
@@ -77,10 +89,14 @@ class QuoteCrawler:
             url, depth = frontier.popleft()
             if url in visited:
                 continue
+            if not self.robots_policy.is_allowed(url):
+                self._report(f"Skipping disallowed URL: {url}")
+                visited.add(url)
+                continue
 
             if pages:
-                self._report(f"Waiting {self.politeness_delay:.0f} seconds before next request...")
-                self._sleep(self.politeness_delay)
+                self._report(f"Waiting {effective_delay:.0f} seconds before next request...")
+                self._sleep(effective_delay)
 
             self._report(f"Crawling {url}")
             html = self._fetch(url)
