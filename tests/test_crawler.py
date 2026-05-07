@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from src.crawler import CrawlerError, QuoteCrawler
+from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
 
 
 class QuoteCrawlerTests(unittest.TestCase):
@@ -133,6 +133,33 @@ class QuoteCrawlerTests(unittest.TestCase):
         with patch("src.crawler.requests.get", return_value=response):
             with self.assertRaises(CrawlerError):
                 crawler._fetch("https://quotes.toscrape.com/")
+
+    def test_fetch_sends_default_user_agent_header(self):
+        response = Mock()
+        response.text = ""
+        response.raise_for_status = Mock()
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        with patch("src.crawler.requests.get", return_value=response) as mock_get:
+            crawler._fetch("https://quotes.toscrape.com/")
+
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["headers"]["User-Agent"], DEFAULT_USER_AGENT)
+
+    def test_fetch_uses_custom_user_agent_when_provided(self):
+        response = Mock()
+        response.text = ""
+        response.raise_for_status = Mock()
+        crawler = QuoteCrawler(
+            start_url="https://quotes.toscrape.com/",
+            user_agent="MyCustomBot/1.0",
+        )
+
+        with patch("src.crawler.requests.get", return_value=response) as mock_get:
+            crawler._fetch("https://quotes.toscrape.com/")
+
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["headers"]["User-Agent"], "MyCustomBot/1.0")
 
 
 if __name__ == "__main__":
