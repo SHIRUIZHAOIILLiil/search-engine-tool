@@ -146,6 +146,69 @@ class QuoteCrawlerTests(unittest.TestCase):
         _, kwargs = mock_get.call_args
         self.assertEqual(kwargs["headers"]["User-Agent"], DEFAULT_USER_AGENT)
 
+    def test_extract_links_returns_absolute_same_host_links(self):
+        html = """
+        <html>
+          <a href="/page/2/">Next</a>
+          <a href="https://quotes.toscrape.com/author/Einstein/">Einstein</a>
+          <a href="tag/love/">Love</a>
+        </html>
+        """
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        links = crawler._extract_links("https://quotes.toscrape.com/", html)
+
+        self.assertEqual(
+            links,
+            [
+                "https://quotes.toscrape.com/page/2/",
+                "https://quotes.toscrape.com/author/Einstein/",
+                "https://quotes.toscrape.com/tag/love/",
+            ],
+        )
+
+    def test_extract_links_filters_other_hosts(self):
+        html = """
+        <html>
+          <a href="/page/2/">Next</a>
+          <a href="https://example.com/external">External</a>
+          <a href="https://other.toscrape.com/elsewhere">Subdomain</a>
+        </html>
+        """
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        links = crawler._extract_links("https://quotes.toscrape.com/", html)
+
+        self.assertEqual(links, ["https://quotes.toscrape.com/page/2/"])
+
+    def test_extract_links_deduplicates_and_strips_fragments(self):
+        html = """
+        <html>
+          <a href="/page/2/">Next</a>
+          <a href="/page/2/#top">Same with fragment</a>
+          <a href="/page/2/">Duplicate</a>
+        </html>
+        """
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        links = crawler._extract_links("https://quotes.toscrape.com/", html)
+
+        self.assertEqual(links, ["https://quotes.toscrape.com/page/2/"])
+
+    def test_extract_links_skips_anchors_without_href(self):
+        html = """
+        <html>
+          <a>No href</a>
+          <a href="">Empty</a>
+          <a href="/page/2/">Valid</a>
+        </html>
+        """
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        links = crawler._extract_links("https://quotes.toscrape.com/", html)
+
+        self.assertEqual(links, ["https://quotes.toscrape.com/page/2/"])
+
     def test_max_depth_defaults_to_none(self):
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
 

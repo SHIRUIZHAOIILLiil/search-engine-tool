@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Callable, Iterable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -96,6 +96,31 @@ class QuoteCrawler:
         next_link = soup.select_one("li.next a")
         next_url = urljoin(url, next_link["href"]) if next_link and next_link.get("href") else None
         return CrawledPage(url=url, text=" ".join(quotes)), next_url
+
+    def _extract_links(self, base_url: str, html: str) -> list[str]:
+        """Return absolute, deduplicated, same-host links from a page.
+
+        Implements the "parse for link tags" step from Lecture 9's
+        crawling-process diagram. Used by the BFS frontier to discover
+        new URLs while ignoring fragments, duplicate hrefs, and links
+        that leave the start host.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        base_host = urlparse(base_url).netloc
+        seen: set[str] = set()
+        links: list[str] = []
+        for anchor in soup.select("a[href]"):
+            href = (anchor.get("href") or "").strip()
+            if not href:
+                continue
+            absolute, _, _ = urljoin(base_url, href).partition("#")
+            if not absolute or absolute in seen:
+                continue
+            if urlparse(absolute).netloc != base_host:
+                continue
+            seen.add(absolute)
+            links.append(absolute)
+        return links
 
     def _report(self, message: str) -> None:
         if self._progress_callback is not None:
