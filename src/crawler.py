@@ -125,9 +125,21 @@ class QuoteCrawler:
         return response.text
 
     def _parse_page(self, url: str, html: str) -> CrawledPage:
+        """Return the page's visible text content as a single string.
+
+        Captures *all* text on the page (quotes, author names, tags,
+        headings, page chrome) so that the inverted index covers every
+        word occurrence on the site, as required by the coursework brief.
+        Per Lecture 11's two-pass tokenisation, BeautifulSoup handles the
+        first pass (markup); we drop ``<script>`` and ``<style>`` content
+        before letting ``get_text`` produce the second-pass string.
+        """
         soup = BeautifulSoup(html, "html.parser")
-        quotes = [quote.get_text(" ", strip=True) for quote in soup.select(".quote .text")]
-        return CrawledPage(url=url, text=" ".join(quotes))
+        for non_content in soup(["script", "style"]):
+            non_content.decompose()
+        body = soup.body or soup
+        text = body.get_text(" ", strip=True)
+        return CrawledPage(url=url, text=text)
 
     def _extract_links(self, base_url: str, html: str) -> list[str]:
         """Return absolute, deduplicated, same-host links from a page.

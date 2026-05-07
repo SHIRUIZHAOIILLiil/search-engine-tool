@@ -32,6 +32,51 @@ class QuoteCrawlerTests(unittest.TestCase):
         self.assertEqual(page.url, "https://quotes.toscrape.com/")
         self.assertEqual(page.text, "")
 
+    def test_parse_page_extracts_author_and_tag_text(self):
+        html = """
+        <html>
+          <body>
+            <div class="quote">
+              <span class="text">A quote.</span>
+              <span>by <small class="author">Einstein</small></span>
+              <div class="tags">
+                <a class="tag">science</a>
+                <a class="tag">physics</a>
+              </div>
+            </div>
+          </body>
+        </html>
+        """
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        page = crawler._parse_page("https://quotes.toscrape.com/", html)
+
+        self.assertIn("A quote.", page.text)
+        self.assertIn("Einstein", page.text)
+        self.assertIn("science", page.text)
+        self.assertIn("physics", page.text)
+
+    def test_parse_page_excludes_script_and_style_content(self):
+        html = """
+        <html>
+          <head>
+            <style>body { color: red; }</style>
+          </head>
+          <body>
+            <script>alert('secret');</script>
+            <p>Visible text.</p>
+          </body>
+        </html>
+        """
+        crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
+
+        page = crawler._parse_page("https://quotes.toscrape.com/", html)
+
+        self.assertIn("Visible text.", page.text)
+        self.assertNotIn("color: red", page.text)
+        self.assertNotIn("alert", page.text)
+        self.assertNotIn("secret", page.text)
+
     def test_parse_page_combines_multiple_quotes_in_order(self):
         html = """
         <html>
@@ -65,7 +110,8 @@ class QuoteCrawlerTests(unittest.TestCase):
             [page.url for page in pages],
             ["https://quotes.toscrape.com/", "https://quotes.toscrape.com/page/2/"],
         )
-        self.assertEqual([page.text for page in pages], ["First page.", "Second page."])
+        self.assertIn("First page.", pages[0].text)
+        self.assertIn("Second page.", pages[1].text)
 
     def test_crawl_waits_between_successive_requests(self):
         html_by_url = {
