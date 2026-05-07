@@ -11,26 +11,35 @@ from typing import Iterable
 from src.crawler import CrawledPage
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9']+")
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 
 Posting = dict[str, object]
-PostingsByUrl = dict[str, dict[str, Posting]]
+PostingsByDocId = dict[str, dict[int, Posting]]
 
 
 @dataclass
 class Index:
-    """Versioned inverted index (Lecture 12 terminology).
+    """Versioned inverted index keyed by integer document ids (Lecture 12).
+
+    Lecture 12 (slide "Index structure and terminology") prescribes a
+    two-table layout for production-grade inverted indices:
+
+    * ``documents`` maps each integer doc_id to its source URL.
+    * ``postings`` maps each term to a doc_id-keyed posting list.
+
+    Storing integer doc_ids keeps posting lists compact (a 50-char URL
+    would otherwise repeat for every term that appears in the page) and
+    enables compressed binary representations later (vbyte / delta
+    encoding work on integer streams).
 
     ``version`` is a schema sentinel so :func:`load_index` can reject
-    files written by an incompatible schema instead of silently producing
-    garbage. ``data`` is the term → URL → posting mapping; a later commit
-    will swap the URL keys for integer document ids and add a separate
-    document-id ↔ URL map per Lecture 12 ("each page is given a unique
-    number to make it more efficient for storing document pointers").
+    files written by an incompatible schema instead of silently
+    producing garbage.
     """
 
     version: int = INDEX_VERSION
-    data: PostingsByUrl = field(default_factory=dict)
+    documents: dict[int, str] = field(default_factory=dict)
+    postings: PostingsByDocId = field(default_factory=dict)
 
 
 def tokenize(text: str) -> list[str]:
@@ -39,13 +48,24 @@ def tokenize(text: str) -> list[str]:
 
 
 def build_index(pages: Iterable[CrawledPage]) -> Index:
-    """Create an inverted index from crawled pages."""
+    """Create an inverted index from crawled pages.
+
+    Each page receives a sequential integer doc_id on first sight; if
+    the same URL appears more than once, the existing doc_id is reused
+    so positions accumulate against a single document entry.
+    """
     index = Index()
+    url_to_doc_id: dict[str, int] = {}
 
     for page in pages:
+        doc_id = url_to_doc_id.get(page.url)
+        if doc_id is None:
+            doc_id = len(index.documents)
+            index.documents[doc_id] = page.url
+            url_to_doc_id[page.url] = doc_id
         for position, token in enumerate(tokenize(page.text)):
-            posting = index.data.setdefault(token, {}).setdefault(
-                page.url,
+            posting = index.postings.setdefault(token, {}).setdefault(
+                doc_id,
                 {"frequency": 0, "positions": []},
             )
             posting["frequency"] = int(posting["frequency"]) + 1
@@ -60,7 +80,17 @@ def save_index(index: Index, path: str | Path = "data/index.json") -> None:
     """Save the inverted index as JSON with its schema version."""
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": index.version, "data": index.data}
+    payload = {
+        "version": index.version,
+        # JSON keys must be strings, so integer doc_ids are stringified
+        # here and converted back on load. This stays internal to the
+        # serialiser; in-memory keys are always integers.
+        "documents": {str(doc_id): url for doc_id, url in index.documents.items()},
+        "postings": {
+            term: {str(doc_id): posting for doc_id, posting in postings.items()}
+            for term, postings in index.postings.items()
+        },
+    }
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -80,4 +110,11 @@ def load_index(path: str | Path = "data/index.json") -> Index:
             f"Index file at {input_path} is version {payload['version']}; "
             f"this tool expects version {INDEX_VERSION}. Rebuild with build."
         )
-    return Index(version=payload["version"], data=payload.get("data", {}))
+    documents = {
+        int(doc_id): url for doc_id, url in payload.get("documents", {}).items()
+    }
+    postings = {
+        term: {int(doc_id): posting for doc_id, posting in posting_map.items()}
+        for term, posting_map in payload.get("postings", {}).items()
+    }
+    return Index(version=payload["version"], documents=documents, postings=postings)

@@ -25,9 +25,10 @@ class IndexerTests(unittest.TestCase):
 
         index = build_index(pages)
 
-        self.assertEqual(index.data["good"]["page-1"]["frequency"], 2)
-        self.assertEqual(index.data["good"]["page-1"]["positions"], [0, 3])
-        self.assertEqual(index.data["friends"]["page-1"]["positions"], [1])
+        self.assertEqual(index.documents, {0: "page-1"})
+        self.assertEqual(index.postings["good"][0]["frequency"], 2)
+        self.assertEqual(index.postings["good"][0]["positions"], [0, 3])
+        self.assertEqual(index.postings["friends"][0]["positions"], [1])
 
     def test_build_index_keeps_pages_separate(self):
         pages = [
@@ -37,17 +38,45 @@ class IndexerTests(unittest.TestCase):
 
         index = build_index(pages)
 
-        self.assertEqual(index.data["good"]["page-1"]["frequency"], 2)
-        self.assertEqual(index.data["good"]["page-1"]["positions"], [0, 1])
-        self.assertEqual(index.data["good"]["page-2"]["frequency"], 1)
-        self.assertEqual(index.data["good"]["page-2"]["positions"], [0])
+        self.assertEqual(index.documents, {0: "page-1", 1: "page-2"})
+        self.assertEqual(index.postings["good"][0]["frequency"], 2)
+        self.assertEqual(index.postings["good"][0]["positions"], [0, 1])
+        self.assertEqual(index.postings["good"][1]["frequency"], 1)
+        self.assertEqual(index.postings["good"][1]["positions"], [0])
+
+    def test_build_index_assigns_sequential_doc_ids(self):
+        pages = [
+            CrawledPage(url="page-a", text="alpha"),
+            CrawledPage(url="page-b", text="beta"),
+            CrawledPage(url="page-c", text="gamma"),
+        ]
+
+        index = build_index(pages)
+
+        self.assertEqual(
+            index.documents,
+            {0: "page-a", 1: "page-b", 2: "page-c"},
+        )
+
+    def test_build_index_reuses_doc_id_for_repeated_url(self):
+        pages = [
+            CrawledPage(url="page-1", text="alpha beta"),
+            CrawledPage(url="page-1", text="gamma"),
+        ]
+
+        index = build_index(pages)
+
+        self.assertEqual(index.documents, {0: "page-1"})
+        self.assertEqual(index.postings["alpha"][0]["frequency"], 1)
+        self.assertEqual(index.postings["gamma"][0]["frequency"], 1)
 
     def test_build_index_handles_empty_page_text(self):
         pages = [CrawledPage(url="page-1", text="")]
 
         index = build_index(pages)
 
-        self.assertEqual(index, Index())
+        self.assertEqual(index.documents, {0: "page-1"})
+        self.assertEqual(index.postings, {})
 
     def test_build_index_stamps_current_schema_version(self):
         index = build_index([])
@@ -56,10 +85,9 @@ class IndexerTests(unittest.TestCase):
 
     def test_save_and_load_index_round_trip(self):
         index = Index(
-            data={
-                "good": {
-                    "page-1": {"frequency": 2, "positions": [0, 3]},
-                },
+            documents={0: "page-1"},
+            postings={
+                "good": {0: {"frequency": 2, "positions": [0, 3]}},
             },
         )
 
@@ -72,7 +100,10 @@ class IndexerTests(unittest.TestCase):
         self.assertEqual(loaded_index, index)
 
     def test_save_index_writes_schema_version_to_disk(self):
-        index = Index(data={"good": {"page-1": {"frequency": 1, "positions": [0]}}})
+        index = Index(
+            documents={0: "page-1"},
+            postings={"good": {0: {"frequency": 1, "positions": [0]}}},
+        )
 
         with TemporaryDirectory() as temporary_directory:
             path = f"{temporary_directory}/index.json"
@@ -82,6 +113,23 @@ class IndexerTests(unittest.TestCase):
                 payload = json.load(fh)
 
         self.assertEqual(payload["version"], INDEX_VERSION)
+
+    def test_save_index_serialises_doc_ids_as_strings(self):
+        index = Index(
+            documents={0: "page-1"},
+            postings={"good": {0: {"frequency": 1, "positions": [0]}}},
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = f"{temporary_directory}/index.json"
+
+            save_index(index, path)
+            with open(path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+
+        # JSON requires string keys; loader converts them back to int.
+        self.assertIn("0", payload["documents"])
+        self.assertIn("0", payload["postings"]["good"])
 
     def test_load_index_rejects_file_with_wrong_version(self):
         with TemporaryDirectory() as temporary_directory:

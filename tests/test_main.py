@@ -40,7 +40,10 @@ class MainCommandTests(unittest.TestCase):
             handle_command("find", Index())
 
     def test_print_command_outputs_posting_list(self):
-        index = Index(data={"good": {"page-1": {"frequency": 1, "positions": [0]}}})
+        index = Index(
+            documents={0: "page-1"},
+            postings={"good": {0: {"frequency": 1, "positions": [0]}}},
+        )
         output = io.StringIO()
 
         with redirect_stdout(output):
@@ -52,9 +55,10 @@ class MainCommandTests(unittest.TestCase):
 
     def test_find_command_outputs_matching_pages(self):
         index = Index(
-            data={
-                "good": {"page-1": {"frequency": 1, "positions": [0]}},
-                "friends": {"page-1": {"frequency": 1, "positions": [1]}},
+            documents={0: "page-1"},
+            postings={
+                "good": {0: {"frequency": 1, "positions": [0]}},
+                "friends": {0: {"frequency": 1, "positions": [1]}},
             },
         )
         output = io.StringIO()
@@ -75,7 +79,10 @@ class MainCommandTests(unittest.TestCase):
         self.assertIn("No matching pages found.", output.getvalue())
 
     def test_load_command_returns_loaded_index(self):
-        loaded_index = Index(data={"good": {"page-1": {"frequency": 1, "positions": [0]}}})
+        loaded_index = Index(
+            documents={0: "page-1"},
+            postings={"good": {0: {"frequency": 1, "positions": [0]}}},
+        )
         output = io.StringIO()
 
         with patch("src.main.load_index", return_value=loaded_index) as load_index:
@@ -88,7 +95,10 @@ class MainCommandTests(unittest.TestCase):
 
     def test_build_command_crawls_indexes_and_saves(self):
         pages = [CrawledPage(url="page-1", text="good friends")]
-        built_index = Index(data={"good": {"page-1": {"frequency": 1, "positions": [0]}}})
+        built_index = Index(
+            documents={0: "page-1"},
+            postings={"good": {0: {"frequency": 1, "positions": [0]}}},
+        )
         crawler = Mock()
         crawler.crawl.return_value = pages
         output = io.StringIO()

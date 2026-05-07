@@ -7,19 +7,25 @@ from src.search import find_pages, print_word
 class SearchTests(unittest.TestCase):
     def setUp(self):
         self.index = Index(
-            data={
+            documents={0: "page-1", 1: "page-2"},
+            postings={
                 "good": {
-                    "page-1": {"frequency": 1, "positions": [0]},
-                    "page-2": {"frequency": 1, "positions": [4]},
+                    0: {"frequency": 1, "positions": [0]},
+                    1: {"frequency": 1, "positions": [4]},
                 },
                 "friends": {
-                    "page-2": {"frequency": 1, "positions": [5]},
+                    1: {"frequency": 1, "positions": [5]},
                 },
             },
         )
 
     def test_print_word_returns_posting_case_insensitively(self):
-        self.assertEqual(print_word(self.index, "GOOD"), self.index.data["good"])
+        expected = {
+            "page-1": {"frequency": 1, "positions": [0]},
+            "page-2": {"frequency": 1, "positions": [4]},
+        }
+
+        self.assertEqual(print_word(self.index, "GOOD"), expected)
 
     def test_print_word_returns_empty_dict_for_missing_word(self):
         self.assertEqual(print_word(self.index, "missing"), {})
@@ -28,7 +34,12 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(print_word(self.index, "!!!"), {})
 
     def test_print_word_uses_first_token_only(self):
-        self.assertEqual(print_word(self.index, "good friends"), self.index.data["good"])
+        expected = {
+            "page-1": {"frequency": 1, "positions": [0]},
+            "page-2": {"frequency": 1, "positions": [4]},
+        }
+
+        self.assertEqual(print_word(self.index, "good friends"), expected)
 
     def test_find_pages_returns_pages_containing_all_words(self):
         self.assertEqual(find_pages(self.index, "good friends"), ["page-2"])
