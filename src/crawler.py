@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from src.parser import parse_html_to_text
 from src.robots import RobotsPolicy
 
 # Identifies the crawler to web servers (Lecture 9: "User-Agent" HTTP header).
@@ -125,21 +126,14 @@ class QuoteCrawler:
         return response.text
 
     def _parse_page(self, url: str, html: str) -> CrawledPage:
-        """Return the page's visible text content as a single string.
+        """Return the parsed text content of a fetched page.
 
-        Captures *all* text on the page (quotes, author names, tags,
-        headings, page chrome) so that the inverted index covers every
-        word occurrence on the site, as required by the coursework brief.
-        Per Lecture 11's two-pass tokenisation, BeautifulSoup handles the
-        first pass (markup); we drop ``<script>`` and ``<style>`` content
-        before letting ``get_text`` produce the second-pass string.
+        Delegates HTML-to-text conversion to :mod:`src.parser` so the
+        crawler stays focused on fetch, queue, and politeness concerns
+        while parsing logic lives in its own module (Lecture 11 two-pass
+        tokenisation).
         """
-        soup = BeautifulSoup(html, "html.parser")
-        for non_content in soup(["script", "style"]):
-            non_content.decompose()
-        body = soup.body or soup
-        text = body.get_text(" ", strip=True)
-        return CrawledPage(url=url, text=text)
+        return CrawledPage(url=url, text=parse_html_to_text(html))
 
     def _extract_links(self, base_url: str, html: str) -> list[str]:
         """Return absolute, deduplicated, same-host links from a page.
