@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 from src.crawler import CrawledPage
 from src.indexer import Index
-from src.main import handle_command
+from src.main import _ensure_utf8_output, handle_command
 
 
 class MainCommandTests(unittest.TestCase):
@@ -130,6 +130,58 @@ class MainCommandTests(unittest.TestCase):
         from_url.assert_called_once()
         self.assertEqual(from_url.call_args.args[0], "https://quotes.toscrape.com/")
         self.assertIs(quote_crawler.call_args.kwargs["robots_policy"], policy)
+
+
+class EnsureUtf8OutputTests(unittest.TestCase):
+    def test_reconfigures_non_utf8_streams_to_utf8(self):
+        class FakeStream:
+            def __init__(self, encoding):
+                self.encoding = encoding
+                self.reconfigured_with = None
+
+            def reconfigure(self, **kwargs):
+                self.reconfigured_with = kwargs
+
+        cp1252 = FakeStream("cp1252")
+        already_utf8 = FakeStream("utf-8")
+
+        with patch("src.main.sys.stdout", cp1252), patch("src.main.sys.stderr", already_utf8):
+            _ensure_utf8_output()
+
+        self.assertEqual(
+            cp1252.reconfigured_with,
+            {"encoding": "utf-8", "errors": "replace"},
+        )
+        # Already-UTF-8 streams are left alone so we don't trigger
+        # spurious reconfigure calls on platforms where the operation
+        # is a no-op or worse, error-prone.
+        self.assertIsNone(already_utf8.reconfigured_with)
+
+    def test_safely_skips_streams_without_reconfigure_method(self):
+        class LegacyStream:
+            encoding = "cp1252"
+            # Older or replaced streams may not expose reconfigure();
+            # the helper must tolerate that without raising.
+
+        legacy = LegacyStream()
+
+        with patch("src.main.sys.stdout", legacy), patch("src.main.sys.stderr", legacy):
+            # Must not raise.
+            _ensure_utf8_output()
+
+    def test_swallows_exceptions_raised_by_reconfigure(self):
+        class HostileStream:
+            encoding = "cp1252"
+
+            def reconfigure(self, **kwargs):
+                raise RuntimeError("stream is detached")
+
+        hostile = HostileStream()
+
+        with patch("src.main.sys.stdout", hostile), patch("src.main.sys.stderr", hostile):
+            # Must not propagate the RuntimeError; CLI startup never
+            # blocks on a cosmetic concern.
+            _ensure_utf8_output()
 
 
 if __name__ == "__main__":
