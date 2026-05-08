@@ -1,6 +1,7 @@
 import unittest
 
 from src.indexer import Index
+from src.ranker import TFIDFRanker
 from src.search import find_pages, print_word
 
 
@@ -62,6 +63,75 @@ class SearchTests(unittest.TestCase):
 
     def test_find_pages_returns_empty_list_when_one_query_term_is_missing(self):
         self.assertEqual(find_pages(self.index, "good missing"), [])
+
+    def test_find_pages_ranks_documents_by_tf_idf_score(self):
+        # Three docs; "alpha" and "beta" each appear in two of them so
+        # idf > 0. Doc 1 has higher tf for "alpha" and should rank first
+        # for the query "alpha beta".
+        index = Index(
+            documents={0: "low-tf", 1: "high-tf", 2: "no-match"},
+            postings={
+                "alpha": {
+                    0: {"frequency": 1, "positions": [0]},
+                    1: {"frequency": 5, "positions": [0, 1, 2, 3, 4]},
+                },
+                "beta": {
+                    0: {"frequency": 1, "positions": [1]},
+                    1: {"frequency": 1, "positions": [5]},
+                },
+            },
+        )
+
+        self.assertEqual(find_pages(index, "alpha beta"), ["high-tf", "low-tf"])
+
+    def test_find_pages_default_ranker_is_tf_idf(self):
+        # When idf is 0 (term in every document), TF-IDF returns 0 for
+        # every candidate; ties resolve by doc_id ascending. Establishes
+        # the default ranker's identity through observable behaviour.
+        index = Index(
+            documents={0: "page-A", 1: "page-B"},
+            postings={
+                "everywhere": {
+                    0: {"frequency": 99, "positions": [0]},
+                    1: {"frequency": 1, "positions": [0]},
+                },
+            },
+        )
+
+        # tf=99 doesn't beat tf=1 because both have idf=0; doc_id wins.
+        self.assertEqual(find_pages(index, "everywhere"), ["page-A", "page-B"])
+
+    def test_find_pages_accepts_custom_ranker_for_dependency_injection(self):
+        # Stub ranker that prefers higher doc_id, the inverse of the
+        # TFIDFRanker tiebreak. Demonstrates the ranker parameter is
+        # honoured rather than ignored in favour of the default.
+        class FavorHigherDocIdRanker:
+            def score(self, index, query_tokens, doc_id):
+                return float(doc_id)
+
+        index = Index(
+            documents={0: "page-A", 1: "page-B", 2: "page-C"},
+            postings={
+                "term": {
+                    0: {"frequency": 1, "positions": [0]},
+                    1: {"frequency": 1, "positions": [0]},
+                    2: {"frequency": 1, "positions": [0]},
+                },
+            },
+        )
+
+        # Default TFIDF would tie everything → ascending doc_id order.
+        # The custom ranker reverses that.
+        self.assertEqual(
+            find_pages(index, "term", ranker=FavorHigherDocIdRanker()),
+            ["page-C", "page-B", "page-A"],
+        )
+
+        # And re-confirm the default order without the override:
+        self.assertEqual(
+            find_pages(index, "term", ranker=TFIDFRanker()),
+            ["page-A", "page-B", "page-C"],
+        )
 
 
 if __name__ == "__main__":
