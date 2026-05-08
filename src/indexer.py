@@ -6,12 +6,20 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from src.crawler import CrawledPage
+from src.parser import ParsedFields
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9']+")
-INDEX_VERSION = 2
+INDEX_VERSION = 3
+
+# Names of the structured fields recorded in each posting's ``fields`` map.
+# The catch-all ``body`` field is *not* listed here because it is already
+# captured by the top-level ``frequency`` / ``positions`` keys; the entries
+# below are the additional Lecture 12 "fields and extents" slots that a
+# future BM25F-style ranker can weight independently.
+FIELD_NAMES: tuple[str, ...] = ("title", "quote_text", "author", "tag")
 
 Posting = dict[str, object]
 PostingsByDocId = dict[str, dict[int, Posting]]
@@ -31,6 +39,11 @@ class Index:
     would otherwise repeat for every term that appears in the page) and
     enables compressed binary representations later (vbyte / delta
     encoding work on integer streams).
+
+    Each posting contains the body-level ``frequency`` / ``positions``
+    plus a ``fields`` map with the same statistics broken down by
+    structural field (Lecture 12 "Fields and Extents") so a future
+    ranker can apply per-field weights.
 
     ``version`` is a schema sentinel so :func:`load_index` can reject
     files written by an incompatible schema instead of silently
@@ -53,6 +66,12 @@ def build_index(pages: Iterable[CrawledPage]) -> Index:
     Each page receives a sequential integer doc_id on first sight; if
     the same URL appears more than once, the existing doc_id is reused
     so positions accumulate against a single document entry.
+
+    Tokens are recorded twice: once at the top level (``frequency`` /
+    ``positions``) for the body text, matching the brief's "all word
+    occurrences" requirement and what ``find_pages`` / ``print_word``
+    consume; and once per structural field (``fields[name]``) for
+    future BM25F-style ranking.
     """
     index = Index()
     url_to_doc_id: dict[str, int] = {}
@@ -63,17 +82,61 @@ def build_index(pages: Iterable[CrawledPage]) -> Index:
             doc_id = len(index.documents)
             index.documents[doc_id] = page.url
             url_to_doc_id[page.url] = doc_id
+
+        # Body pass: feeds the top-level statistics that the brief's
+        # print/find commands rely on.
         for position, token in enumerate(tokenize(page.text)):
             posting = index.postings.setdefault(token, {}).setdefault(
                 doc_id,
-                {"frequency": 0, "positions": []},
+                _empty_posting(),
             )
             posting["frequency"] = int(posting["frequency"]) + 1
             positions = posting["positions"]
             if isinstance(positions, list):
                 positions.append(position)
 
+        # Per-field pass: independent tokenisation per structural slot.
+        # A token that appears in a field but never in the body still
+        # produces a posting (frequency=0 at top level) so that future
+        # field-weighted rankers can reach it.
+        for field_name, field_text in _iter_named_fields(page.fields):
+            for position, token in enumerate(tokenize(field_text)):
+                posting = index.postings.setdefault(token, {}).setdefault(
+                    doc_id,
+                    _empty_posting(),
+                )
+                fields_map = posting["fields"]
+                if not isinstance(fields_map, dict):
+                    continue
+                field_stats = fields_map.setdefault(
+                    field_name,
+                    {"frequency": 0, "positions": []},
+                )
+                field_stats["frequency"] = int(field_stats["frequency"]) + 1
+                field_positions = field_stats["positions"]
+                if isinstance(field_positions, list):
+                    field_positions.append(position)
+
     return index
+
+
+def _empty_posting() -> Posting:
+    """Return a fresh posting with the canonical key layout."""
+    return {"frequency": 0, "positions": [], "fields": {}}
+
+
+def _iter_named_fields(fields: ParsedFields) -> Iterator[tuple[str, str]]:
+    """Yield ``(field_name, joined_text)`` pairs for the named slots.
+
+    ``ParsedFields`` exposes ``quote_texts``, ``authors`` and ``tags`` as
+    lists; the indexer treats each list as a single text blob (joined
+    with spaces) so positions count tokens within the slot rather than
+    within an individual list element.
+    """
+    yield "title", fields.title
+    yield "quote_text", " ".join(fields.quote_texts)
+    yield "author", " ".join(fields.authors)
+    yield "tag", " ".join(fields.tags)
 
 
 def save_index(index: Index, path: str | Path = "data/index.json") -> None:
