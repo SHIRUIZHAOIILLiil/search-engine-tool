@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
 from pathlib import Path
 
 from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
@@ -16,8 +17,38 @@ DEFAULT_INDEX_PATH = PROJECT_ROOT / "data" / "index.json"
 TARGET_URL = "https://quotes.toscrape.com/"
 
 
+def _ensure_utf8_output() -> None:
+    """Reconfigure stdout/stderr to UTF-8 so Unicode chars render cleanly.
+
+    Smoke-testing the build against quotes.toscrape.com surfaced a
+    Windows-only display glitch: scraped quote text contains "smart"
+    Unicode quotes (U+201C / U+201D) and the default Git-Bash stdout
+    encoding (cp1252) renders them as the replacement glyph. The
+    on-disk index is unaffected because :func:`save_index` writes with
+    explicit ``encoding="utf-8"``; this function only fixes the live
+    terminal output.
+
+    Streams that already use UTF-8, or that don't support
+    ``reconfigure`` (older Python or replaced streams), are left
+    untouched. Failures are swallowed so the CLI never blocks on a
+    cosmetic concern.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if not hasattr(stream, "reconfigure"):
+            continue
+        if (stream.encoding or "").lower() == "utf-8":
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            # The stream may have been replaced or detached; degrade
+            # silently rather than block the CLI on cosmetics.
+            pass
+
+
 def run_shell() -> None:
     """Run the interactive command shell."""
+    _ensure_utf8_output()
     index: Index = Index()
 
     print("Search Engine Tool. Type 'help' for commands or 'exit' to quit.")
