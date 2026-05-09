@@ -12,7 +12,7 @@ from src.crawler import CrawledPage
 from src.parser import ParsedFields
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9']+")
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 
 # Names of the structured fields recorded in each posting's ``fields`` map.
 # The catch-all ``body`` field is *not* listed here because it is already
@@ -34,6 +34,9 @@ class Index:
 
     * ``documents`` maps each integer doc_id to its source URL.
     * ``postings`` maps each term to a doc_id-keyed posting list.
+    * ``doc_lengths`` records each document's token count, needed by
+      length-normalising rankers like BM25 (Croft, Metzler & Strohman,
+      ch. 5).
 
     Storing integer doc_ids keeps posting lists compact (a 50-char URL
     would otherwise repeat for every term that appears in the page) and
@@ -53,6 +56,7 @@ class Index:
     version: int = INDEX_VERSION
     documents: dict[int, str] = field(default_factory=dict)
     postings: PostingsByDocId = field(default_factory=dict)
+    doc_lengths: dict[int, int] = field(default_factory=dict)
 
 
 def tokenize(text: str) -> list[str]:
@@ -84,8 +88,13 @@ def build_index(pages: Iterable[CrawledPage]) -> Index:
             url_to_doc_id[page.url] = doc_id
 
         # Body pass: feeds the top-level statistics that the brief's
-        # print/find commands rely on.
-        for position, token in enumerate(tokenize(page.text)):
+        # print/find commands rely on, and tallies the body token count
+        # for length-aware rankers like BM25.
+        body_tokens = tokenize(page.text)
+        index.doc_lengths[doc_id] = (
+            index.doc_lengths.get(doc_id, 0) + len(body_tokens)
+        )
+        for position, token in enumerate(body_tokens):
             posting = index.postings.setdefault(token, {}).setdefault(
                 doc_id,
                 _empty_posting(),
@@ -153,6 +162,9 @@ def save_index(index: Index, path: str | Path = "data/index.json") -> None:
             term: {str(doc_id): posting for doc_id, posting in postings.items()}
             for term, postings in index.postings.items()
         },
+        "doc_lengths": {
+            str(doc_id): length for doc_id, length in index.doc_lengths.items()
+        },
     }
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -180,4 +192,12 @@ def load_index(path: str | Path = "data/index.json") -> Index:
         term: {int(doc_id): posting for doc_id, posting in posting_map.items()}
         for term, posting_map in payload.get("postings", {}).items()
     }
-    return Index(version=payload["version"], documents=documents, postings=postings)
+    doc_lengths = {
+        int(doc_id): length for doc_id, length in payload.get("doc_lengths", {}).items()
+    }
+    return Index(
+        version=payload["version"],
+        documents=documents,
+        postings=postings,
+        doc_lengths=doc_lengths,
+    )

@@ -135,6 +135,58 @@ class IndexerTests(unittest.TestCase):
 
         self.assertEqual(index.postings["hello"][0]["fields"], {})
 
+    def test_build_index_records_doc_lengths_in_body_tokens(self):
+        pages = [
+            CrawledPage(url="page-1", text="alpha beta gamma"),
+            CrawledPage(url="page-2", text="delta"),
+        ]
+
+        index = build_index(pages)
+
+        # Body lengths are token counts, not character counts.
+        self.assertEqual(index.doc_lengths, {0: 3, 1: 1})
+
+    def test_build_index_records_zero_length_for_empty_body(self):
+        pages = [CrawledPage(url="page-1", text="")]
+
+        index = build_index(pages)
+
+        self.assertEqual(index.doc_lengths, {0: 0})
+
+    def test_build_index_doc_length_accumulates_for_repeated_url(self):
+        # Repeated URL re-uses the same doc_id, so postings accumulate;
+        # the body length must accumulate the same way so BM25 sees the
+        # full token count later.
+        pages = [
+            CrawledPage(url="page-1", text="alpha beta"),
+            CrawledPage(url="page-1", text="gamma"),
+        ]
+
+        index = build_index(pages)
+
+        self.assertEqual(index.doc_lengths, {0: 3})
+
+    def test_save_and_load_index_round_trip_preserves_doc_lengths(self):
+        index = Index(
+            documents={0: "page-1", 1: "page-2"},
+            postings={
+                "good": {
+                    0: {"frequency": 1, "positions": [0], "fields": {}},
+                    1: {"frequency": 1, "positions": [4], "fields": {}},
+                },
+            },
+            doc_lengths={0: 5, 1: 12},
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = f"{temporary_directory}/index.json"
+
+            save_index(index, path)
+            loaded_index = load_index(path)
+
+        self.assertEqual(loaded_index.doc_lengths, {0: 5, 1: 12})
+        self.assertEqual(loaded_index, index)
+
     def test_save_and_load_index_round_trip_preserves_fields(self):
         fields = ParsedFields(
             title="Title text",
