@@ -35,6 +35,78 @@ class Ranker(Protocol):
         ...
 
 
+class BM25Ranker:
+    """Okapi BM25 scorer (Croft, Metzler & Strohman, ch. 5).
+
+    BM25 is the de-facto standard ranking function in modern IR systems
+    (Lucene, Elasticsearch, Solr all default to it). It improves on
+    plain TF-IDF in three ways:
+
+    * **TF saturation** — additional occurrences of a term contribute
+      diminishing returns via the ``tf * (k1 + 1) / (tf + k1 * ...)``
+      shape, instead of TF-IDF's linear ``tf`` factor.
+    * **Length normalisation** — longer documents are penalised through
+      the ``b * dl / avgdl`` term, since long documents are more likely
+      to mention any given word by chance.
+    * **Smoothed IDF** — the Robertson IDF ``log((N - df + 0.5) / (df + 0.5) + 1)``
+      stays non-negative even when a term appears in every document,
+      avoiding the degenerate ``log(N/N) = 0`` of the plain formula.
+
+    Per-term score::
+
+        score(t, d) = idf(t) * tf * (k1 + 1)
+                      ────────────────────────
+                      tf + k1 * (1 - b + b * dl/avgdl)
+
+    Multi-term query: scores are summed across query tokens.
+
+    Default parameters (``k1=1.5``, ``b=0.75``) sit at the textbook
+    midpoint and match Croft's chapter 5 examples; both are
+    constructor-configurable for tuning.
+    """
+
+    def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
+        self.k1 = k1
+        self.b = b
+
+    def score(
+        self,
+        index: Index,
+        query_tokens: list[str],
+        doc_id: int,
+    ) -> float:
+        n_docs = len(index.documents)
+        if n_docs == 0 or doc_id not in index.documents:
+            return 0.0
+
+        # Average document length over the corpus. ``len(documents)``
+        # rather than ``len(doc_lengths)`` keeps the divisor stable if
+        # a length entry is somehow missing.
+        avgdl = sum(index.doc_lengths.values()) / n_docs
+        if avgdl == 0:
+            avgdl = 1.0
+        dl = index.doc_lengths.get(doc_id, 0)
+
+        total = 0.0
+        for token in query_tokens:
+            postings = index.postings.get(token)
+            if not postings:
+                continue
+            posting = postings.get(doc_id)
+            if not posting:
+                continue
+            tf = int(posting.get("frequency", 0))
+            if tf == 0:
+                continue
+            df = len(postings)
+            idf = math.log((n_docs - df + 0.5) / (df + 0.5) + 1)
+            denominator = tf + self.k1 * (1 - self.b + self.b * dl / avgdl)
+            if denominator == 0:
+                continue
+            total += idf * (tf * (self.k1 + 1)) / denominator
+        return total
+
+
 class TFIDFRanker:
     """Vector-space TF-IDF scorer.
 
