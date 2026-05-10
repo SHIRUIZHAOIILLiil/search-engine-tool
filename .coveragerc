@@ -1,0 +1,15 @@
+[run]
+source = src
+branch = True
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+show_missing = True
+skip_covered = False
+precision = 1
+
+[html]
+directory = htmlcov
