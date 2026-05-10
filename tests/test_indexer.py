@@ -4,8 +4,9 @@ import unittest
 from tempfile import TemporaryDirectory
 
 from src.crawler import CrawledPage
-from src.indexer import INDEX_VERSION, Index, build_index, load_index, save_index, tokenize
+from src.indexer import INDEX_VERSION, Index, build_index, load_index, save_index
 from src.parser import ParsedFields
+from src.tokenizer import TokenizerConfig, tokenize
 
 
 class IndexerTests(unittest.TestCase):
@@ -273,6 +274,55 @@ class IndexerTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 load_index(path)
+
+    def test_build_index_stores_tokenizer_config_on_index(self):
+        config = TokenizerConfig(apply_stemming=True)
+
+        index = build_index([], config=config)
+
+        self.assertEqual(index.tokenizer_config, config)
+
+    def test_build_index_applies_tokenizer_config_to_body_tokens(self):
+        # Stemming maps "running" → "run", "cats" → "cat" — verify the
+        # index keys reflect the stem, not the surface form.
+        config = TokenizerConfig(apply_stemming=True)
+        pages = [CrawledPage(url="page-1", text="running cats")]
+
+        index = build_index(pages, config=config)
+
+        self.assertIn("run", index.postings)
+        self.assertIn("cat", index.postings)
+        self.assertNotIn("running", index.postings)
+        self.assertNotIn("cats", index.postings)
+
+    def test_build_index_default_config_preserves_brief_behaviour(self):
+        # No config supplied → no stemming or stopword filtering, so
+        # the index keys are the raw lowercased tokens (the brief's
+        # default contract).
+        pages = [CrawledPage(url="page-1", text="running cats")]
+
+        index = build_index(pages)
+
+        self.assertIn("running", index.postings)
+        self.assertIn("cats", index.postings)
+        self.assertEqual(index.tokenizer_config, TokenizerConfig())
+
+    def test_save_and_load_preserves_tokenizer_config(self):
+        config = TokenizerConfig(apply_stemming=True, apply_stopword_filter=True)
+        index = Index(
+            documents={0: "page-1"},
+            postings={"foo": {0: {"frequency": 1, "positions": [0], "fields": {}}}},
+            doc_lengths={0: 1},
+            tokenizer_config=config,
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = f"{temporary_directory}/index.json"
+
+            save_index(index, path)
+            loaded_index = load_index(path)
+
+        self.assertEqual(loaded_index.tokenizer_config, config)
 
     def test_load_index_raises_error_for_missing_file(self):
         with TemporaryDirectory() as temporary_directory:

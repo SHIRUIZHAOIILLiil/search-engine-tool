@@ -1,8 +1,10 @@
 import unittest
 
-from src.indexer import Index
+from src.crawler import CrawledPage
+from src.indexer import Index, build_index
 from src.ranker import TFIDFRanker
 from src.search import find_pages, find_phrase, print_word
+from src.tokenizer import TokenizerConfig
 
 
 class SearchTests(unittest.TestCase):
@@ -63,6 +65,18 @@ class SearchTests(unittest.TestCase):
 
     def test_find_pages_returns_empty_list_when_one_query_term_is_missing(self):
         self.assertEqual(find_pages(self.index, "good missing"), [])
+
+    def test_find_pages_uses_index_tokenizer_config_for_query(self):
+        # Same idea as the phrase test below: build with stemming on,
+        # then a user query in surface form must still match the stems
+        # stored in the index. This pins the build/search consistency
+        # invariant that motivates storing the config on the index.
+        config = TokenizerConfig(apply_stemming=True)
+        pages = [CrawledPage(url="page-1", text="cats are running")]
+        index = build_index(pages, config=config)
+
+        self.assertEqual(find_pages(index, "cats"), ["page-1"])
+        self.assertEqual(find_pages(index, "running"), ["page-1"])
 
     def test_find_pages_ranks_documents_by_tf_idf_score(self):
         # Three docs; "alpha" and "beta" each appear in two of them so
@@ -175,6 +189,19 @@ class FindPhraseTests(unittest.TestCase):
         )
 
         self.assertEqual(find_phrase(index, ""), [])
+
+    def test_find_phrase_uses_index_tokenizer_config_for_query(self):
+        # Build an index with stemming enabled, so "running" → "run".
+        # The user types the un-stemmed surface form; find_phrase must
+        # apply the same config when tokenising the query so the query
+        # tokens line up with the index keys.
+        config = TokenizerConfig(apply_stemming=True)
+        pages = [CrawledPage(url="page-1", text="i love running marathons")]
+        index = build_index(pages, config=config)
+
+        # Without applying the index's config to the query, "running"
+        # wouldn't match the indexed stem "run" and we'd get [].
+        self.assertEqual(find_phrase(index, "running marathon"), ["page-1"])
 
     def test_default_ranker_orders_tied_phrase_matches_by_doc_id(self):
         # Both docs contain the phrase "alpha beta" and both terms occur

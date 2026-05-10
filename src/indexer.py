@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
-import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator
 
 from src.crawler import CrawledPage
 from src.parser import ParsedFields
+from src.tokenizer import TokenizerConfig, tokenize
 
-TOKEN_PATTERN = re.compile(r"[A-Za-z0-9']+")
 INDEX_VERSION = 4
 
 # Names of the structured fields recorded in each posting's ``fields`` map.
@@ -37,6 +36,11 @@ class Index:
     * ``doc_lengths`` records each document's token count, needed by
       length-normalising rankers like BM25 (Croft, Metzler & Strohman,
       ch. 5).
+    * ``tokenizer_config`` is the :class:`~src.tokenizer.TokenizerConfig`
+      under which this index was built. Storing it on the index means
+      :mod:`src.search` can tokenise queries with the same options
+      automatically — no need for callers to remember whether stemming
+      or stopword filtering were enabled at build time.
 
     Storing integer doc_ids keeps posting lists compact (a 50-char URL
     would otherwise repeat for every term that appears in the page) and
@@ -57,14 +61,13 @@ class Index:
     documents: dict[int, str] = field(default_factory=dict)
     postings: PostingsByDocId = field(default_factory=dict)
     doc_lengths: dict[int, int] = field(default_factory=dict)
+    tokenizer_config: TokenizerConfig = field(default_factory=TokenizerConfig)
 
 
-def tokenize(text: str) -> list[str]:
-    """Convert text into case-insensitive searchable tokens."""
-    return [match.group(0).lower() for match in TOKEN_PATTERN.finditer(text)]
-
-
-def build_index(pages: Iterable[CrawledPage]) -> Index:
+def build_index(
+    pages: Iterable[CrawledPage],
+    config: TokenizerConfig | None = None,
+) -> Index:
     """Create an inverted index from crawled pages.
 
     Each page receives a sequential integer doc_id on first sight; if
@@ -76,8 +79,15 @@ def build_index(pages: Iterable[CrawledPage]) -> Index:
     occurrences" requirement and what ``find_pages`` / ``print_word``
     consume; and once per structural field (``fields[name]``) for
     future BM25F-style ranking.
+
+    The supplied :class:`~src.tokenizer.TokenizerConfig` (or the
+    default ``TokenizerConfig()``) governs every ``tokenize`` call in
+    this build and is stored on the resulting :class:`Index` so the
+    search layer can apply the same config to user queries.
     """
-    index = Index()
+    if config is None:
+        config = TokenizerConfig()
+    index = Index(tokenizer_config=config)
     url_to_doc_id: dict[str, int] = {}
 
     for page in pages:
@@ -90,7 +100,7 @@ def build_index(pages: Iterable[CrawledPage]) -> Index:
         # Body pass: feeds the top-level statistics that the brief's
         # print/find commands rely on, and tallies the body token count
         # for length-aware rankers like BM25.
-        body_tokens = tokenize(page.text)
+        body_tokens = tokenize(page.text, config)
         index.doc_lengths[doc_id] = (
             index.doc_lengths.get(doc_id, 0) + len(body_tokens)
         )
@@ -109,7 +119,7 @@ def build_index(pages: Iterable[CrawledPage]) -> Index:
         # produces a posting (frequency=0 at top level) so that future
         # field-weighted rankers can reach it.
         for field_name, field_text in _iter_named_fields(page.fields):
-            for position, token in enumerate(tokenize(field_text)):
+            for position, token in enumerate(tokenize(field_text, config)):
                 posting = index.postings.setdefault(token, {}).setdefault(
                     doc_id,
                     _empty_posting(),
@@ -165,6 +175,7 @@ def save_index(index: Index, path: str | Path = "data/index.json") -> None:
         "doc_lengths": {
             str(doc_id): length for doc_id, length in index.doc_lengths.items()
         },
+        "tokenizer_config": asdict(index.tokenizer_config),
     }
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -195,9 +206,15 @@ def load_index(path: str | Path = "data/index.json") -> Index:
     doc_lengths = {
         int(doc_id): length for doc_id, length in payload.get("doc_lengths", {}).items()
     }
+    # Tokeniser config is an additive field — pre-13.2 v4 indexes won't
+    # have it on disk, but defaulting matches their build-time behaviour
+    # (no stemming, no stopword filter).
+    config_data = payload.get("tokenizer_config", {})
+    tokenizer_config = TokenizerConfig(**config_data)
     return Index(
         version=payload["version"],
         documents=documents,
         postings=postings,
         doc_lengths=doc_lengths,
+        tokenizer_config=tokenizer_config,
     )

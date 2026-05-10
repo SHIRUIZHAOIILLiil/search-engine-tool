@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from src.indexer import Index, tokenize
+from src.indexer import Index
 from src.ranker import Ranker, TFIDFRanker
 from src.retrieval import conjunctive_retrieval, phrase_retrieval
+from src.tokenizer import tokenize
 
 
 def print_word(index: Index, word: str) -> dict[str, object]:
@@ -14,8 +15,13 @@ def print_word(index: Index, word: str) -> dict[str, object]:
     translates them back to URLs via :attr:`Index.documents` so the
     user sees the same shape they'd expect from the brief's example
     (``> print nonsense`` → URL → ``{frequency, positions}``).
+
+    The query is tokenised under the index's stored
+    :class:`~src.tokenizer.TokenizerConfig`, so if the index was built
+    with stemming enabled the user can still print by the un-stemmed
+    word (e.g. ``print running`` finds the stem ``run``).
     """
-    tokens = tokenize(word)
+    tokens = tokenize(word, index.tokenizer_config)
     if not tokens:
         return {}
     raw = index.postings.get(tokens[0], {})
@@ -41,11 +47,15 @@ def find_pages(
        (TF-IDF by default) and orders them by score descending. Ties
        on score break on doc_id ascending so the order is deterministic.
 
+    The query is tokenised under ``index.tokenizer_config`` so the same
+    stemming / stopword choices that produced the index also apply to
+    the query — keeping the two sides consistent.
+
     Returns:
         URLs ordered by relevance. The doc_id → URL mapping comes
         from :attr:`Index.documents`.
     """
-    tokens = tokenize(query)
+    tokens = tokenize(query, index.tokenizer_config)
     if not tokens:
         return []
 
@@ -72,8 +82,11 @@ def find_phrase(
     Surfaced by the CLI as ``find "good friends"`` — the quoted form
     disambiguates phrase intent from the conjunctive form
     ``find good friends`` that the brief specifies for unquoted input.
+
+    The query is tokenised under ``index.tokenizer_config`` so the
+    phrase match operates on the same vocabulary as the index.
     """
-    tokens = tokenize(query)
+    tokens = tokenize(query, index.tokenizer_config)
     if not tokens:
         return []
 
