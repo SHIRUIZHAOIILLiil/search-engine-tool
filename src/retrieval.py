@@ -219,3 +219,82 @@ def conjunctive_retrieval(
     if top_k is not None:
         scored = scored[:top_k]
     return scored
+
+
+def phrase_match(
+    index: Index,
+    query_tokens: list[str],
+) -> list[int]:
+    """Return doc_ids where ``query_tokens`` form a consecutive phrase.
+
+    A phrase ``[t_0, t_1, ..., t_{n-1}]`` occurs starting at position
+    ``p`` in a document iff every ``t_i`` is at position ``p + i``.
+    Equivalently, after subtracting each token's offset ``i`` from its
+    position list, the N normalised lists must share at least one
+    common value — that shared value is exactly ``p``. Computing the
+    set intersection of the normalised lists therefore answers the
+    phrase question in linear time per candidate.
+
+    :func:`conjunctive_match` runs first as a cheap prefilter: a phrase
+    match implies every term is present in the document, so the AND
+    filter eliminates obvious non-candidates without touching positions.
+
+    Known limitation: positions are global offsets within the body's
+    flattened text. Our parser concatenates structural fields with
+    whitespace separators, so a phrase that straddles a structural
+    boundary (e.g. one ``<div class="quote">``'s last token followed
+    by the next quote's first token) can spuriously match. The
+    coursework target site rarely surfaces this in practice; a full
+    fix requires the indexer to interleave phrase-boundary markers.
+    """
+    if not query_tokens:
+        return []
+
+    candidates = conjunctive_match(index, query_tokens)
+    if not candidates:
+        return []
+
+    matching: list[int] = []
+    for doc_id in candidates:
+        normalised: list[set[int]] = []
+        for offset, token in enumerate(query_tokens):
+            posting = index.postings[token][doc_id]
+            raw_positions = posting.get("positions", [])
+            if not isinstance(raw_positions, list):
+                normalised.append(set())
+                continue
+            # Drop positions that would imply the phrase starting
+            # before index 0 — they cannot align with a valid offset.
+            normalised.append({p - offset for p in raw_positions if p >= offset})
+
+        if normalised and set.intersection(*normalised):
+            matching.append(doc_id)
+
+    return matching
+
+
+def phrase_retrieval(
+    index: Index,
+    query_tokens: list[str],
+    ranker: Ranker,
+    top_k: int | None = None,
+) -> list[tuple[int, float]]:
+    """Filter to phrase matches then score and rank them.
+
+    Same composition pattern as :func:`conjunctive_retrieval`, but
+    swaps the prefilter for the stricter :func:`phrase_match`. Only
+    documents containing the query as a consecutive phrase survive to
+    the scoring stage.
+    """
+    matching_ids = phrase_match(index, query_tokens)
+    if not matching_ids:
+        return []
+
+    scored = [
+        (doc_id, ranker.score(index, query_tokens, doc_id))
+        for doc_id in matching_ids
+    ]
+    scored.sort(key=lambda pair: (-pair[1], pair[0]))
+    if top_k is not None:
+        scored = scored[:top_k]
+    return scored

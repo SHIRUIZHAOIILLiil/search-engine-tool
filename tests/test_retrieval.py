@@ -6,6 +6,8 @@ from src.retrieval import (
     conjunctive_match,
     conjunctive_retrieval,
     document_at_a_time,
+    phrase_match,
+    phrase_retrieval,
     term_at_a_time,
 )
 
@@ -389,6 +391,174 @@ class ConjunctiveRetrievalTests(unittest.TestCase):
         results = conjunctive_retrieval(index, ["alpha", "beta"], TFIDFRanker())
 
         self.assertEqual(results, [])
+
+
+class PhraseMatchTests(unittest.TestCase):
+    def test_finds_consecutive_phrase(self):
+        # "good" at position 3, "friends" at position 4 → adjacent.
+        # Also at positions 17 and 18 — two phrase occurrences in one doc.
+        index = Index(
+            documents={0: "page-1"},
+            postings={
+                "good": {0: _posting(3, [3, 17, 50])},
+                "friends": {0: _posting(2, [4, 18])},
+            },
+            doc_lengths={0: 100},
+        )
+
+        self.assertEqual(phrase_match(index, ["good", "friends"]), [0])
+
+    def test_rejects_non_consecutive_terms(self):
+        # Both terms present but never adjacent → no phrase.
+        index = Index(
+            documents={0: "page-1"},
+            postings={
+                "good": {0: _posting(1, [3])},
+                "friends": {0: _posting(1, [10])},
+            },
+            doc_lengths={0: 50},
+        )
+
+        self.assertEqual(phrase_match(index, ["good", "friends"]), [])
+
+    def test_returns_empty_when_any_term_is_missing(self):
+        index = Index(
+            documents={0: "page-1"},
+            postings={"good": {0: _posting(1, [3])}},
+            doc_lengths={0: 10},
+        )
+
+        # "friends" not in the index → no phrase candidate.
+        self.assertEqual(phrase_match(index, ["good", "friends"]), [])
+
+    def test_single_token_degenerates_to_conjunctive_match(self):
+        index = Index(
+            documents={0: "page-A", 1: "page-B"},
+            postings={"good": {0: _posting(1, [0]), 1: _posting(1, [5])}},
+            doc_lengths={0: 10, 1: 10},
+        )
+
+        # A one-token "phrase" is just every doc containing the token.
+        self.assertEqual(phrase_match(index, ["good"]), [0, 1])
+
+    def test_finds_phrase_in_some_documents_but_not_others(self):
+        # Doc 0: alpha at 3, beta at 4 → adjacent → match.
+        # Doc 1: alpha at 5, beta at 9 → not adjacent → no match.
+        # Doc 2: only alpha; beta missing → AND prefilter eliminates it.
+        index = Index(
+            documents={0: "page-A", 1: "page-B", 2: "page-C"},
+            postings={
+                "alpha": {
+                    0: _posting(1, [3]),
+                    1: _posting(1, [5]),
+                    2: _posting(1, [0]),
+                },
+                "beta": {
+                    0: _posting(1, [4]),
+                    1: _posting(1, [9]),
+                },
+            },
+            doc_lengths={0: 10, 1: 10, 2: 10},
+        )
+
+        self.assertEqual(phrase_match(index, ["alpha", "beta"]), [0])
+
+    def test_finds_three_word_phrase_via_offset_alignment(self):
+        # The N-term case stresses the "subtract offset i" normalisation:
+        # phrase "a b c" requires positions p, p+1, p+2 for the three
+        # tokens. After subtracting 0, 1, 2 the normalised sets must
+        # share at least one value (the phrase's starting position p).
+        index = Index(
+            documents={0: "page-1"},
+            postings={
+                "a": {0: _posting(2, [5, 20])},  # offset 0 → {5, 20}
+                "b": {0: _posting(2, [6, 22])},  # offset 1 → {5, 21}
+                "c": {0: _posting(1, [7])},       # offset 2 → {5}
+            },
+            doc_lengths={0: 30},
+        )
+        # Intersection {5, 20} ∩ {5, 21} ∩ {5} = {5} → phrase at position 5.
+
+        self.assertEqual(phrase_match(index, ["a", "b", "c"]), [0])
+
+    def test_returns_empty_for_empty_query(self):
+        index = Index(
+            documents={0: "page-1"},
+            postings={"good": {0: _posting(1, [0])}},
+            doc_lengths={0: 10},
+        )
+
+        self.assertEqual(phrase_match(index, []), [])
+
+    def test_drops_positions_that_would_align_before_zero(self):
+        # "b" at position 0 with offset 1 would suggest a phrase
+        # starting at position -1, which is nonsensical. The filter
+        # ``if p >= offset`` discards it; the doc has no valid phrase.
+        index = Index(
+            documents={0: "page-1"},
+            postings={
+                "a": {0: _posting(1, [5])},
+                "b": {0: _posting(1, [0])},
+            },
+            doc_lengths={0: 10},
+        )
+
+        self.assertEqual(phrase_match(index, ["a", "b"]), [])
+
+
+class PhraseRetrievalTests(unittest.TestCase):
+    def test_ranks_documents_containing_the_phrase(self):
+        # Docs 0 and 1 both contain phrase "alpha beta"; doc 2 has the
+        # terms but not adjacent; doc 3 has neither, giving df < N and
+        # therefore non-zero idf so ranking is observable.
+        index = Index(
+            documents={0: "page-A", 1: "page-B", 2: "not-phrase", 3: "empty"},
+            postings={
+                "alpha": {
+                    0: _posting(1, [3]),
+                    1: _posting(3, [3, 10, 20]),
+                    2: _posting(1, [5]),
+                },
+                "beta": {
+                    0: _posting(1, [4]),
+                    1: _posting(1, [4]),
+                    2: _posting(1, [50]),
+                },
+            },
+            doc_lengths={0: 10, 1: 30, 2: 100, 3: 5},
+        )
+
+        results = phrase_retrieval(index, ["alpha", "beta"], TFIDFRanker())
+
+        # Doc 1 has higher tf for "alpha" → ranks above doc 0.
+        # Doc 2 dropped because phrase isn't adjacent. Doc 3 dropped by
+        # AND prefilter.
+        self.assertEqual([doc_id for doc_id, _ in results], [1, 0])
+
+    def test_top_k_limits_results_after_filter(self):
+        index = Index(
+            documents={i: f"page-{i}" for i in range(4)},
+            postings={
+                "alpha": {
+                    0: _posting(1, [0]),
+                    1: _posting(2, [0, 5]),
+                    2: _posting(5, [0, 5, 10, 15, 20]),
+                },
+                "beta": {
+                    0: _posting(1, [1]),
+                    1: _posting(1, [1]),
+                    2: _posting(1, [1]),
+                },
+            },
+            doc_lengths={0: 10, 1: 10, 2: 30, 3: 5},
+        )
+        ranker = TFIDFRanker()
+
+        full = phrase_retrieval(index, ["alpha", "beta"], ranker)
+        limited = phrase_retrieval(index, ["alpha", "beta"], ranker, top_k=2)
+
+        self.assertEqual(len(full), 3)
+        self.assertEqual(limited, full[:2])
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from pathlib import Path
 from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
 from src.indexer import Index, build_index, load_index, save_index
 from src.robots import RobotsPolicy
-from src.search import find_pages, print_word
+from src.search import find_pages, find_phrase, print_word
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INDEX_PATH = PROJECT_ROOT / "data" / "index.json"
@@ -108,7 +108,14 @@ def handle_command(raw_command: str, index: Index) -> Index:
     if command == "find":
         if not args:
             raise ValueError("Usage: find <word or phrase>")
-        results = find_pages(index, " ".join(args))
+        # A single shlex-arg containing a space comes from a quoted
+        # input like `find "good friends"` — route to strict phrase
+        # matching. Every other shape (one bareword, multiple words)
+        # stays on the conjunctive AND path the brief specifies.
+        if len(args) == 1 and " " in args[0]:
+            results = find_phrase(index, args[0])
+        else:
+            results = find_pages(index, " ".join(args))
         if results:
             for url in results:
                 print(url)

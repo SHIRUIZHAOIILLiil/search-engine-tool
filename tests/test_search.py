@@ -2,7 +2,7 @@ import unittest
 
 from src.indexer import Index
 from src.ranker import TFIDFRanker
-from src.search import find_pages, print_word
+from src.search import find_pages, find_phrase, print_word
 
 
 class SearchTests(unittest.TestCase):
@@ -132,6 +132,69 @@ class SearchTests(unittest.TestCase):
             find_pages(index, "term", ranker=TFIDFRanker()),
             ["page-A", "page-B", "page-C"],
         )
+
+
+class FindPhraseTests(unittest.TestCase):
+    def test_returns_pages_containing_consecutive_phrase(self):
+        # Doc A has "good" at 3, "friends" at 4 → adjacent → match.
+        # Doc B has "good" at 10, "friends" at 20 → not adjacent → miss.
+        index = Index(
+            documents={0: "page-A", 1: "page-B"},
+            postings={
+                "good": {
+                    0: {"frequency": 1, "positions": [3]},
+                    1: {"frequency": 1, "positions": [10]},
+                },
+                "friends": {
+                    0: {"frequency": 1, "positions": [4]},
+                    1: {"frequency": 1, "positions": [20]},
+                },
+            },
+            doc_lengths={0: 10, 1: 30},
+        )
+
+        self.assertEqual(find_phrase(index, "good friends"), ["page-A"])
+
+    def test_returns_empty_when_phrase_is_never_consecutive(self):
+        index = Index(
+            documents={0: "page-1"},
+            postings={
+                "good": {0: {"frequency": 1, "positions": [3]}},
+                "friends": {0: {"frequency": 1, "positions": [10]}},
+            },
+            doc_lengths={0: 50},
+        )
+
+        self.assertEqual(find_phrase(index, "good friends"), [])
+
+    def test_returns_empty_for_empty_query(self):
+        index = Index(
+            documents={0: "page-1"},
+            postings={"good": {0: {"frequency": 1, "positions": [0]}}},
+            doc_lengths={0: 10},
+        )
+
+        self.assertEqual(find_phrase(index, ""), [])
+
+    def test_default_ranker_orders_tied_phrase_matches_by_doc_id(self):
+        # Both docs contain the phrase "alpha beta" and both terms occur
+        # in every document → idf=0 → scores tie → fall back to doc_id.
+        index = Index(
+            documents={0: "page-A", 1: "page-B"},
+            postings={
+                "alpha": {
+                    0: {"frequency": 1, "positions": [3]},
+                    1: {"frequency": 1, "positions": [7]},
+                },
+                "beta": {
+                    0: {"frequency": 1, "positions": [4]},
+                    1: {"frequency": 1, "positions": [8]},
+                },
+            },
+            doc_lengths={0: 10, 1: 20},
+        )
+
+        self.assertEqual(find_phrase(index, "alpha beta"), ["page-A", "page-B"])
 
 
 if __name__ == "__main__":
