@@ -69,6 +69,34 @@ class MainCommandTests(unittest.TestCase):
         self.assertIs(returned_index, index)
         self.assertIn("page-1", output.getvalue())
 
+    def test_find_command_routes_quoted_argument_to_phrase_mode(self):
+        output = io.StringIO()
+
+        with patch("src.main.find_phrase", return_value=["page-1"]) as find_phrase_mock:
+            with patch("src.main.find_pages") as find_pages_mock:
+                with redirect_stdout(output):
+                    handle_command('find "good friends"', Index())
+
+        # The phrase function is called once with the quoted text
+        # (no extra splitting) and the conjunctive path is skipped.
+        find_phrase_mock.assert_called_once()
+        self.assertEqual(find_phrase_mock.call_args.args[1], "good friends")
+        find_pages_mock.assert_not_called()
+        self.assertIn("page-1", output.getvalue())
+
+    def test_find_command_routes_unquoted_args_to_conjunctive_mode(self):
+        output = io.StringIO()
+
+        with patch("src.main.find_phrase") as find_phrase_mock:
+            with patch("src.main.find_pages", return_value=["page-1"]) as find_pages_mock:
+                with redirect_stdout(output):
+                    handle_command("find good friends", Index())
+
+        # Unquoted input is the brief's documented AND form.
+        find_pages_mock.assert_called_once()
+        self.assertEqual(find_pages_mock.call_args.args[1], "good friends")
+        find_phrase_mock.assert_not_called()
+
     def test_find_command_reports_no_matches(self):
         output = io.StringIO()
 

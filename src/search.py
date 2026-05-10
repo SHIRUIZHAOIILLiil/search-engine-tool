@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.indexer import Index, tokenize
 from src.ranker import Ranker, TFIDFRanker
-from src.retrieval import conjunctive_retrieval
+from src.retrieval import conjunctive_retrieval, phrase_retrieval
 
 
 def print_word(index: Index, word: str) -> dict[str, object]:
@@ -53,4 +53,32 @@ def find_pages(
         ranker = TFIDFRanker()
 
     results = conjunctive_retrieval(index, tokens, ranker)
+    return [index.documents[doc_id] for doc_id, _ in results]
+
+
+def find_phrase(
+    index: Index,
+    query: str,
+    ranker: Ranker | None = None,
+) -> list[str]:
+    """Find pages where the query tokens occur as a consecutive phrase.
+
+    Stricter than :func:`find_pages`: every query token must appear
+    *adjacent and in order* in the document, not merely co-present.
+    Routed via :func:`~src.retrieval.phrase_retrieval` which uses the
+    position-offset intersection trick described in Lecture 13's
+    "advanced query processing" topic.
+
+    Surfaced by the CLI as ``find "good friends"`` — the quoted form
+    disambiguates phrase intent from the conjunctive form
+    ``find good friends`` that the brief specifies for unquoted input.
+    """
+    tokens = tokenize(query)
+    if not tokens:
+        return []
+
+    if ranker is None:
+        ranker = TFIDFRanker()
+
+    results = phrase_retrieval(index, tokens, ranker)
     return [index.documents[doc_id] for doc_id, _ in results]
