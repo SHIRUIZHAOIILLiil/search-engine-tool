@@ -62,10 +62,20 @@ quotes.toscrape.com
 python -m pip install -r requirements.txt
 ```
 
-Dependencies declared in [`requirements.txt`](requirements.txt):
+Runtime dependencies declared in [`requirements.txt`](requirements.txt):
 
 - `requests` — HTTP client
 - `beautifulsoup4` — HTML parser
+
+To run the test suite with coverage, install the development extras instead:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+[`requirements-dev.txt`](requirements-dev.txt) pulls in the runtime requirements plus:
+
+- `coverage` — line + branch coverage measurement (used by the CI gate)
 
 Tested with Python 3.10+.
 
