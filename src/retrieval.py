@@ -15,6 +15,7 @@ alongside it.
 from __future__ import annotations
 
 import heapq
+import math
 
 from src.indexer import Index
 from src.ranker import Ranker
@@ -184,18 +185,95 @@ def conjunctive_match(
     return matches
 
 
+def _advance_pointer(sorted_list: list[int], pointer: int, target: int) -> int:
+    """Advance ``pointer`` in ``sorted_list`` until ``list[pointer] >= target``.
+
+    Implements Lecture 13's skip-pointer scheme (slides 18-23): big
+    ``sqrt(remaining)`` jumps while still safely below ``target``, then
+    a linear scan over the last bucket. ``sqrt(n)`` is the textbook
+    skip-distance heuristic — it balances jump count against scan
+    length, giving O(sqrt(n)) work for a single advance.
+
+    L13's worked formula ``kn/c + pc/2`` uses bytes; this function
+    operates on entries (Python ints) instead, but the algebra is
+    identical with "entry count" substituted for "byte count".
+    """
+    n = len(sorted_list)
+    if pointer >= n or sorted_list[pointer] >= target:
+        return pointer
+
+    step = max(1, int(math.sqrt(n - pointer)))
+
+    # Big jumps while a full step stays strictly below the target.
+    while pointer + step < n and sorted_list[pointer + step] < target:
+        pointer += step
+
+    # Linear scan over the final ``step``-sized window (or off the end).
+    while pointer < n and sorted_list[pointer] < target:
+        pointer += 1
+
+    return pointer
+
+
+def conjunctive_match_with_skip(
+    index: Index,
+    query_tokens: list[str],
+) -> list[int]:
+    """Conjunctive intersection with Lecture 13 skip-pointer optimisation.
+
+    Produces results identical to :func:`conjunctive_match` but advances
+    lagging pointers in ``sqrt(remaining_length)`` jumps instead of one
+    entry at a time. For the canonical skewed query (one rare term, one
+    common term — L13's "galago / animal" example), this turns a near-
+    full scan of the long list into roughly ``sqrt(N)`` work.
+
+    The equivalence with the simpler algorithm is pinned by a
+    property-based test in ``test_retrieval.py`` over many random
+    posting layouts; if you change either function, that test will
+    catch the divergence.
+    """
+    if not query_tokens:
+        return []
+
+    sorted_lists: list[list[int]] = []
+    for token in query_tokens:
+        postings = index.postings.get(token)
+        if not postings:
+            return []
+        sorted_lists.append(sorted(postings.keys()))
+
+    pointers = [0] * len(sorted_lists)
+    matches: list[int] = []
+
+    while all(pointers[i] < len(sorted_lists[i]) for i in range(len(sorted_lists))):
+        currents = [sorted_lists[i][pointers[i]] for i in range(len(sorted_lists))]
+        max_doc = max(currents)
+        if all(c == max_doc for c in currents):
+            matches.append(max_doc)
+            for i in range(len(pointers)):
+                pointers[i] += 1
+        else:
+            # Skip-ahead each lagging pointer to the first entry >= max_doc.
+            for i in range(len(pointers)):
+                if sorted_lists[i][pointers[i]] < max_doc:
+                    pointers[i] = _advance_pointer(sorted_lists[i], pointers[i], max_doc)
+
+    return matches
+
+
 def conjunctive_retrieval(
     index: Index,
     query_tokens: list[str],
     ranker: Ranker,
     top_k: int | None = None,
 ) -> list[tuple[int, float]]:
-    """AND-filter via :func:`conjunctive_match`, then score and rank.
+    """AND-filter then score and rank.
 
     The brief's ``find good friends`` example expects conjunctive
     semantics ("all pages containing the words"). This function
-    composes Lecture 13's conjunctive intersection with DAAT-style
-    scoring on the surviving candidates.
+    composes Lecture 13's conjunctive intersection — using the
+    skip-pointer optimised variant for production scale — with
+    DAAT-style scoring on the surviving candidates.
 
     Args:
         index: The inverted index.
@@ -207,7 +285,7 @@ def conjunctive_retrieval(
         ``(doc_id, score)`` tuples sorted by score descending; ties on
         score break on doc_id ascending.
     """
-    matching_ids = conjunctive_match(index, query_tokens)
+    matching_ids = conjunctive_match_with_skip(index, query_tokens)
     if not matching_ids:
         return []
 

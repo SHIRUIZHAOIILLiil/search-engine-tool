@@ -2,8 +2,11 @@ import unittest
 
 from src.indexer import Index
 from src.ranker import BM25Ranker, TFIDFRanker
+import random
+
 from src.retrieval import (
     conjunctive_match,
+    conjunctive_match_with_skip,
     conjunctive_retrieval,
     document_at_a_time,
     phrase_match,
@@ -391,6 +394,97 @@ class ConjunctiveRetrievalTests(unittest.TestCase):
         results = conjunctive_retrieval(index, ["alpha", "beta"], TFIDFRanker())
 
         self.assertEqual(results, [])
+
+
+class ConjunctiveMatchWithSkipTests(unittest.TestCase):
+    def _index_with_postings(self, postings: dict) -> Index:
+        return Index(postings=postings)
+
+    def test_finds_intersection_of_two_lists(self):
+        # Same shape as the basic conjunctive test, just routed through
+        # the skip-optimised variant.
+        index = self._index_with_postings(
+            {
+                "galago": {did: _posting(1, [0]) for did in [1, 4, 5, 9, 10]},
+                "animal": {did: _posting(1, [0]) for did in [1, 2, 3, 4, 6, 8, 9, 10]},
+            }
+        )
+
+        self.assertEqual(
+            conjunctive_match_with_skip(index, ["galago", "animal"]),
+            [1, 4, 9, 10],
+        )
+
+    def test_handles_very_skewed_list_sizes(self):
+        # The motivating case from L13: 1 rare term + 1 very common term.
+        # The skip logic should jump far ahead in the long list without
+        # touching most entries. Output must still be correct.
+        index = self._index_with_postings(
+            {
+                "rare": {500: _posting(1, [0])},
+                "common": {did: _posting(1, [0]) for did in range(1000)},
+            }
+        )
+
+        self.assertEqual(
+            conjunctive_match_with_skip(index, ["rare", "common"]),
+            [500],
+        )
+
+    def test_returns_empty_when_term_missing(self):
+        index = self._index_with_postings(
+            {"alpha": {did: _posting(1, [0]) for did in [1, 2]}}
+        )
+
+        self.assertEqual(
+            conjunctive_match_with_skip(index, ["alpha", "missing"]),
+            [],
+        )
+
+    def test_returns_empty_for_empty_query(self):
+        index = self._index_with_postings(
+            {"alpha": {1: _posting(1, [0])}}
+        )
+
+        self.assertEqual(conjunctive_match_with_skip(index, []), [])
+
+    def test_single_term_returns_sorted_posting_keys(self):
+        index = self._index_with_postings(
+            {"alpha": {7: _posting(1, [0]), 1: _posting(1, [0]), 5: _posting(1, [0])}}
+        )
+
+        self.assertEqual(
+            conjunctive_match_with_skip(index, ["alpha"]),
+            [1, 5, 7],
+        )
+
+    def test_produces_identical_results_to_simple_algorithm(self):
+        # Property-based-ish: across 20 randomised trials, the
+        # skip-optimised variant must produce exactly the same matches
+        # as the textbook simple algorithm. If a future change to
+        # either function ever breaks the equivalence, this test
+        # catches it before silent search-result drift.
+        rng = random.Random(20260511)
+        for trial in range(20):
+            num_docs = rng.randint(20, 300)
+            num_terms = rng.randint(2, 5)
+            postings = {}
+            for t in range(num_terms):
+                term = f"t{t}"
+                term_doc_count = rng.randint(1, num_docs)
+                doc_ids = rng.sample(range(num_docs), term_doc_count)
+                postings[term] = {did: _posting(1, [0]) for did in doc_ids}
+            index = Index(postings=postings)
+            query = list(postings.keys())
+
+            simple = conjunctive_match(index, query)
+            skipped = conjunctive_match_with_skip(index, query)
+
+            self.assertEqual(
+                simple,
+                skipped,
+                f"Trial {trial}: simple vs skip diverged for query {query}",
+            )
 
 
 class PhraseMatchTests(unittest.TestCase):
