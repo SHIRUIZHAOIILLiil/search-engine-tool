@@ -126,3 +126,96 @@ def term_at_a_time(
     if top_k is not None:
         results = results[:top_k]
     return results
+
+
+def conjunctive_match(
+    index: Index,
+    query_tokens: list[str],
+) -> list[int]:
+    """Return doc_ids appearing in *every* query token's posting list.
+
+    Implements Lecture 13's "Processing Conjunctive Queries, Simple
+    Algorithm" (slide 17), generalised from two lists to N. Each query
+    term's posting list is walked in sorted doc_id order using a
+    pointer; on every iteration we look at the current doc_id at each
+    pointer and:
+
+    * Append a match if every pointer agrees on the same doc_id, then
+      advance every pointer.
+    * Otherwise advance every pointer whose current value lags behind
+      the largest current value (these are the "smaller" pointers in
+      L13's two-list pseudocode generalised to N).
+
+    Whichever list is exhausted first stops the loop. The result is
+    ascending by doc_id, ready for downstream scoring.
+    """
+    if not query_tokens:
+        return []
+
+    sorted_lists: list[list[int]] = []
+    for token in query_tokens:
+        postings = index.postings.get(token)
+        if not postings:
+            # Any term with no postings makes a conjunctive match impossible.
+            return []
+        sorted_lists.append(sorted(postings.keys()))
+
+    pointers = [0] * len(sorted_lists)
+    matches: list[int] = []
+
+    while all(pointers[i] < len(sorted_lists[i]) for i in range(len(sorted_lists))):
+        currents = [sorted_lists[i][pointers[i]] for i in range(len(sorted_lists))]
+        max_doc = max(currents)
+        if all(c == max_doc for c in currents):
+            matches.append(max_doc)
+            for i in range(len(pointers)):
+                pointers[i] += 1
+        else:
+            # Inner while skips past several too-small entries in one
+            # pass — important when one list is much shorter than the
+            # others (a typical "rare term + common term" query).
+            for i in range(len(pointers)):
+                while (
+                    pointers[i] < len(sorted_lists[i])
+                    and sorted_lists[i][pointers[i]] < max_doc
+                ):
+                    pointers[i] += 1
+
+    return matches
+
+
+def conjunctive_retrieval(
+    index: Index,
+    query_tokens: list[str],
+    ranker: Ranker,
+    top_k: int | None = None,
+) -> list[tuple[int, float]]:
+    """AND-filter via :func:`conjunctive_match`, then score and rank.
+
+    The brief's ``find good friends`` example expects conjunctive
+    semantics ("all pages containing the words"). This function
+    composes Lecture 13's conjunctive intersection with DAAT-style
+    scoring on the surviving candidates.
+
+    Args:
+        index: The inverted index.
+        query_tokens: Lowercased query tokens.
+        ranker: Scoring strategy implementing the Ranker protocol.
+        top_k: Maximum results to return; ``None`` returns every match.
+
+    Returns:
+        ``(doc_id, score)`` tuples sorted by score descending; ties on
+        score break on doc_id ascending.
+    """
+    matching_ids = conjunctive_match(index, query_tokens)
+    if not matching_ids:
+        return []
+
+    scored = [
+        (doc_id, ranker.score(index, query_tokens, doc_id))
+        for doc_id in matching_ids
+    ]
+    scored.sort(key=lambda pair: (-pair[1], pair[0]))
+    if top_k is not None:
+        scored = scored[:top_k]
+    return scored

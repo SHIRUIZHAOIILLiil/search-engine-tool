@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.indexer import Index, tokenize
 from src.ranker import Ranker, TFIDFRanker
+from src.retrieval import conjunctive_retrieval
 
 
 def print_word(index: Index, word: str) -> dict[str, object]:
@@ -29,16 +30,20 @@ def find_pages(
     """Find pages containing every query token, ordered by relevance.
 
     Two-stage retrieval (Lecture 13 conjunctive processing followed by
-    Lecture 12 ranking):
+    Lecture 12 ranking), implemented by delegation:
 
-    1. **AND filter** — keep only documents that contain *every* query
-       token, as required by the brief ("all pages containing the
-       words 'good' and 'friends'").
-    2. **Rank** — score each surviving document with ``ranker`` (a
-       :class:`~src.ranker.TFIDFRanker` if not supplied) and return
-       URLs in descending score order. Ties break on ``doc_id``
-       ascending so the order is deterministic when scores collide
-       (e.g. when ``idf == 0`` because the term is in every document).
+    1. :func:`~src.retrieval.conjunctive_retrieval` walks the sorted
+       posting lists in lock-step (Lecture 13's "Processing Conjunctive
+       Queries, Simple Algorithm") to keep only documents that contain
+       *every* query token. This honours the brief's "all pages
+       containing the words 'good' and 'friends'" requirement.
+    2. The same call scores the surviving candidates with ``ranker``
+       (TF-IDF by default) and orders them by score descending. Ties
+       on score break on doc_id ascending so the order is deterministic.
+
+    Returns:
+        URLs ordered by relevance. The doc_id → URL mapping comes
+        from :attr:`Index.documents`.
     """
     tokens = tokenize(query)
     if not tokens:
@@ -47,12 +52,5 @@ def find_pages(
     if ranker is None:
         ranker = TFIDFRanker()
 
-    posting_sets = [set(index.postings.get(token, {}).keys()) for token in tokens]
-    if not posting_sets:
-        return []
-    matching_ids = set.intersection(*posting_sets)
-
-    scored = [(doc_id, ranker.score(index, tokens, doc_id)) for doc_id in matching_ids]
-    scored.sort(key=lambda pair: (-pair[1], pair[0]))
-
-    return [index.documents[doc_id] for doc_id, _ in scored]
+    results = conjunctive_retrieval(index, tokens, ranker)
+    return [index.documents[doc_id] for doc_id, _ in results]
