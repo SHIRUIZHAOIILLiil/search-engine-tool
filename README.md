@@ -1,5 +1,9 @@
 # Search Engine Tool
 
+[![CI](https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/actions/workflows/ci.yml)
+![Coverage](https://img.shields.io/badge/coverage-92.5%25-brightgreen)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+
 Coursework 2 project for **COMP3011 Web Services and Web Data**.
 
 The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), builds an inverted index of every word it finds, and exposes a small command-line shell with four commands (`build`, `load`, `print`, `find`) for searching the site offline.
@@ -17,7 +21,7 @@ The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), 
 - **Field-structured parser** — quote text, author, tags, page title, and full body are stored separately so future rankers can weight them differently.
 - **Versioned inverted index** with integer `doc_id` keys and a separate URL map (Lecture 12 layout).
 - **Schema version guard** — `load` refuses to read indexes written by an incompatible version.
-- **88 unit tests** covering crawler, parser, robots policy, indexer, search, and CLI wiring.
+- **207 tests at 92.5% coverage** spanning unit, integration, performance, and property layers, run on Python 3.10/3.11/3.12 in CI.
 
 ---
 
@@ -161,15 +165,30 @@ After `build`, `data/index.json` looks like:
 python -m unittest discover
 ```
 
-The test suite currently runs **88 unit tests** with no warnings.
+The test suite currently runs **207 tests** with no warnings and reaches **92.5 % line + branch coverage** of `src/`.
 
-| File | Coverage |
-|---|---|
-| [`tests/test_crawler.py`](tests/test_crawler.py) | Fetch, BFS frontier, link extraction, politeness, robots integration |
-| [`tests/test_parser.py`](tests/test_parser.py) | Visible-text extraction, field extraction, `<script>`/`<style>` filtering |
-| [`tests/test_robots.py`](tests/test_robots.py) | `Disallow` matching, `Crawl-delay`, factories (`from_text` / `from_url`), fetch fallback |
-| [`tests/test_indexer.py`](tests/test_indexer.py) | Tokenisation, build, doc-id assignment, save/load round-trip, schema-version validation |
-| [`tests/test_search.py`](tests/test_search.py) | `print` and `find` behaviours including empty / punctuation / repeated / missing query terms |
-| [`tests/test_main.py`](tests/test_main.py) | CLI command handler, robots wiring |
+| File | Layer | Coverage |
+|---|---|---|
+| [`tests/test_crawler.py`](tests/test_crawler.py) | Unit | Fetch, BFS frontier, link extraction, politeness, robots integration |
+| [`tests/test_parser.py`](tests/test_parser.py) | Unit | Visible-text extraction, field extraction, `<script>`/`<style>` filtering |
+| [`tests/test_robots.py`](tests/test_robots.py) | Unit | `Disallow` matching, `Crawl-delay`, factories (`from_text` / `from_url`), fetch fallback |
+| [`tests/test_tokenizer.py`](tests/test_tokenizer.py) | Unit | Default tokeniser, stopword filter, Porter Step 1 stemming |
+| [`tests/test_indexer.py`](tests/test_indexer.py) | Unit | Build, doc-id assignment, fields/extents, doc-length tracking, save/load |
+| [`tests/test_ranker.py`](tests/test_ranker.py) | Unit | TF-IDF and BM25 formulas, edge cases, Ranker protocol |
+| [`tests/test_retrieval.py`](tests/test_retrieval.py) | Unit | DAAT / TAAT / conjunctive / skip-pointer / phrase algorithms |
+| [`tests/test_search.py`](tests/test_search.py) | Unit | `print_word`, `find_pages`, `find_phrase` user-facing behaviour |
+| [`tests/test_main.py`](tests/test_main.py) | Unit | CLI command handler, robots wiring, UTF-8 stdout |
+| [`tests/test_integration.py`](tests/test_integration.py) | Integration | Full pipeline: stub HTTP → crawl → build → save/load → find / phrase |
+| [`tests/test_performance.py`](tests/test_performance.py) | Performance | Regression budgets on 500-page synthetic corpus |
+| [`tests/test_properties.py`](tests/test_properties.py) | Property | Invariants over 20-trial randomised inputs (save/load identity, phrase ⊆ AND, BM25 ≥ 0, …) |
 
-Integration, performance, and property-based tests are planned for a later commit and will live alongside the existing unit suite.
+### Continuous integration
+
+Every push to `main` and every pull request triggers
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). The workflow:
+
+* runs the full test suite under [`coverage.py`](https://coverage.readthedocs.io/) on a Python 3.10 / 3.11 / 3.12 matrix,
+* prints a per-module coverage report with missing-line numbers, and
+* **fails the build if total coverage drops below 85 %** (current: 92.5 %).
+
+A green CI badge above means the latest `main` commit passes all 207 tests on all three supported Python versions.
