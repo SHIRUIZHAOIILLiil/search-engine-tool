@@ -9,6 +9,60 @@ implementation steps these tags trace back to are summarised in the
 [Lecture alignment](README.md#lecture-alignment) and
 [Algorithms](README.md#algorithms) sections of the README.
 
+## [1.6.0] — 2026-05-11
+
+The v1.2.0 "Did you mean..." path used a length-pruned linear scan
+over the vocabulary — O(N) per query token, fine on the brief's
+~2 000-term corpus but not on a much larger one. v1.6.0 cuts that
+to expected O(log N) on natural-language vocabularies via a
+Burkhard-Keller metric tree, while preserving the linear scan as
+the reference implementation for small vocabularies and as a
+property-test oracle.
+
+### Added
+- `src/bktree.py` — generic metric-tree data structure with
+  triangle-inequality pruning. Distance function is injected so the
+  tree stays usable with any metric; ``add`` is idempotent; ``search``
+  walks an explicit stack to avoid Python's recursion limit on
+  worst-case shapes. 14 dedicated tests in `tests/test_bktree.py`
+  including a property test that pins BK-tree search equivalent to
+  brute-force linear scan across 4 800 randomised assertions
+  (60 random vocabs x 20 random targets x 4 distance thresholds).
+- `BKTREE_MIN_VOCAB = 500` threshold in `src/suggest.py`. Below it,
+  `suggest_corrections` keeps the linear scan (the BK-tree build
+  cost would not pay back); at or above, it transparently switches
+  to a tree built once per call. Callers that issue many queries
+  against the same vocabulary can pass a pre-built `BKTree` via the
+  new `bktree=` parameter to amortise the build across calls.
+- `src/search.py::_get_or_build_bktree` lazily builds and caches a
+  BK-tree on every loaded :class:`Index` instance — keyed via a
+  ``setattr`` on the instance rather than a dataclass field, so the
+  Index shape and the save/load roundtrip are unchanged.
+- `benchmarks/run_suggest_benchmark.py` — independent benchmark
+  runner for the suggest path. Default sweep: vocabulary sizes
+  100 / 500 / 2 000 / 5 000 across two vocabulary styles
+  (``clustered`` — English-morphology synthetic — and ``random`` —
+  uniform random strings). Mirrors the v1.1.0 retrieval-benchmark
+  methodology: warmup discarded, median + IQR across reps, separate
+  time / memory passes, JSON+CSV+Markdown outputs.
+- `synthesize_clustered_vocabulary` and `make_typo` helpers in
+  `benchmarks/corpus.py`.
+- 4 BK-tree caching tests in `tests/test_search.py`, 4 path-
+  equivalence tests in `tests/test_suggest.py`, 11 vocabulary /
+  runner tests in `tests/test_benchmarks.py`.
+
+### Empirical findings
+The benchmark surfaces a deliberate honest finding: the BK-tree's
+triangle-inequality pruning depends on the vocabulary's distance
+distribution. On the clustered (English-morphology) generator,
+BK-tree is ~2x faster than linear scan at 5 000 terms
+(440 ms vs 916 ms for 50 typo queries; reproducible via
+`python -m benchmarks.run_suggest_benchmark`). On the uniform-random
+generator, distances cluster around a single mean so pruning fails
+and BK-tree comes within ~3 % of linear — at the worst case, the
+build cost dominates the savings. Both numbers ship in the
+benchmark output so the algorithm's preconditions are explicit.
+
 ## [1.5.0] — 2026-05-11
 
 ### Added
@@ -349,6 +403,7 @@ shell with the four required `build` / `load` / `print` / `find`
 commands, a single-file JSON-persisted inverted index, and the first
 round of unit tests covering the indexer and search modules.
 
+[1.6.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.6.0
 [1.5.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.5.0
 [1.4.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.4.0
 [1.3.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.3.0
