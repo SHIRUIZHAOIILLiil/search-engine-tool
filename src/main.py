@@ -10,7 +10,12 @@ from pathlib import Path
 from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
 from src.indexer import Index, build_index, load_index, save_index
 from src.robots import RobotsPolicy
-from src.search import find_pages, find_phrase, format_did_you_mean, print_word
+from src.search import (
+    find_pages_with_snippets,
+    find_phrase_with_snippets,
+    format_did_you_mean,
+    print_word,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INDEX_PATH = PROJECT_ROOT / "data" / "index.json"
@@ -114,13 +119,21 @@ def handle_command(raw_command: str, index: Index) -> Index:
         # stays on the conjunctive AND path the brief specifies.
         if len(args) == 1 and " " in args[0]:
             query_text = args[0]
-            results = find_phrase(index, query_text)
+            results = find_phrase_with_snippets(index, query_text)
         else:
             query_text = " ".join(args)
-            results = find_pages(index, query_text)
+            results = find_pages_with_snippets(index, query_text)
         if results:
-            for url in results:
+            # Per result: URL on its own line, then the snippet
+            # indented two spaces so the eye groups (URL, context)
+            # together. Snippets with no extractable content (rare
+            # — empty body or a v4 legacy index) collapse to just
+            # the URL so the find output never has a dangling blank
+            # indented line.
+            for url, snippet in results:
                 print(url)
+                if snippet:
+                    print(f"  {snippet}")
         else:
             print("No matching pages found.")
             # Offer a spelling-correction hint only when the query

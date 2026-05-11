@@ -69,11 +69,83 @@ class MainCommandTests(unittest.TestCase):
         self.assertIs(returned_index, index)
         self.assertIn("page-1", output.getvalue())
 
-    def test_find_command_routes_quoted_argument_to_phrase_mode(self):
+    def test_find_command_prints_indented_snippet_below_url(self):
+        # v1.4.0: each result line is followed by an indented context
+        # snippet that highlights the query tokens. Verifies the
+        # two-line format and the bracket markup carry through.
+        index = Index(
+            documents={0: "https://example.com/page-1"},
+            documents_text={
+                0: "Good friends are like stars in the night sky.",
+            },
+            postings={
+                "good": {0: {"frequency": 1, "positions": [0]}},
+                "friends": {0: {"frequency": 1, "positions": [1]}},
+            },
+        )
         output = io.StringIO()
 
-        with patch("src.main.find_phrase", return_value=["page-1"]) as find_phrase_mock:
-            with patch("src.main.find_pages") as find_pages_mock:
+        with redirect_stdout(output):
+            handle_command("find good friends", index)
+
+        text = output.getvalue()
+        lines = text.strip().splitlines()
+        self.assertEqual(lines[0], "https://example.com/page-1")
+        # Indented snippet line follows.
+        self.assertTrue(lines[1].startswith("  "),
+                        f"Expected snippet line to be indented; got {lines[1]!r}")
+        self.assertIn("[Good]", lines[1])
+        self.assertIn("[friends]", lines[1])
+
+    def test_find_command_falls_back_to_url_only_when_snippet_is_empty(self):
+        # Legacy index (no documents_text) -> empty snippet -> output
+        # collapses to the URL alone with no dangling blank-indent line.
+        index = Index(
+            documents={0: "https://example.com/page-1"},
+            documents_text={},  # legacy / empty
+            postings={"good": {0: {"frequency": 1, "positions": [0]}}},
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find good", index)
+
+        lines = output.getvalue().strip().splitlines()
+        self.assertEqual(lines, ["https://example.com/page-1"])
+
+    def test_find_command_phrase_mode_uses_phrase_highlighting(self):
+        # Quoted query routes to phrase mode; the snippet must bracket
+        # the whole phrase as one unit, not each token independently.
+        index = Index(
+            documents={0: "https://example.com/page-1"},
+            documents_text={
+                0: "We are all good friends here, sharing the journey.",
+            },
+            postings={
+                "good": {0: {"frequency": 1, "positions": [3]}},
+                "friends": {0: {"frequency": 1, "positions": [4]}},
+            },
+            doc_lengths={0: 10},
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command('find "good friends"', index)
+
+        text = output.getvalue()
+        self.assertIn("[good friends]", text)
+        self.assertNotIn("[good] [friends]", text)
+
+    def test_find_command_routes_quoted_argument_to_phrase_mode(self):
+        # v1.4.0: main.py imports the ``_with_snippets`` variants so it
+        # can print URL + context excerpt per result; patches follow.
+        output = io.StringIO()
+
+        with patch(
+            "src.main.find_phrase_with_snippets",
+            return_value=[("page-1", "")],
+        ) as find_phrase_mock:
+            with patch("src.main.find_pages_with_snippets") as find_pages_mock:
                 with redirect_stdout(output):
                     handle_command('find "good friends"', Index())
 
@@ -87,8 +159,11 @@ class MainCommandTests(unittest.TestCase):
     def test_find_command_routes_unquoted_args_to_conjunctive_mode(self):
         output = io.StringIO()
 
-        with patch("src.main.find_phrase") as find_phrase_mock:
-            with patch("src.main.find_pages", return_value=["page-1"]) as find_pages_mock:
+        with patch("src.main.find_phrase_with_snippets") as find_phrase_mock:
+            with patch(
+                "src.main.find_pages_with_snippets",
+                return_value=[("page-1", "")],
+            ) as find_pages_mock:
                 with redirect_stdout(output):
                     handle_command("find good friends", Index())
 

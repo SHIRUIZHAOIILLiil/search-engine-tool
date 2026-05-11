@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.indexer import Index
 from src.ranker import Ranker, TFIDFRanker
 from src.retrieval import conjunctive_retrieval, phrase_retrieval
+from src.snippet import extract_snippet
 from src.suggest import suggest_corrections
 from src.tokenizer import tokenize
 
@@ -96,6 +97,81 @@ def find_phrase(
 
     results = phrase_retrieval(index, tokens, ranker)
     return [index.documents[doc_id] for doc_id, _ in results]
+
+
+def find_pages_with_snippets(
+    index: Index,
+    query: str,
+    ranker: Ranker | None = None,
+) -> list[tuple[str, str]]:
+    """Find pages plus a highlighted context snippet for each result.
+
+    Same retrieval contract as :func:`find_pages` (conjunctive match
+    on ``query`` tokens, ranked by ``ranker`` defaulting to TF-IDF),
+    but each entry pairs the URL with a short body excerpt produced
+    by :func:`src.snippet.extract_snippet`. The snippet anchors on
+    the earliest matching token in the body, with every query token
+    occurrence wrapped in ``[brackets]`` for visual emphasis.
+
+    A pre-v1.4.0 (INDEX_VERSION 4) index loaded into the current
+    process would have an empty :attr:`Index.documents_text`; this
+    function then returns an empty snippet string for that document,
+    keeping the URL portion of the result intact. Rebuild via the
+    ``build`` command to restore snippets.
+
+    Returns:
+        ``[(url, snippet), ...]`` ordered by relevance. Order matches
+        :func:`find_pages` exactly so existing relevance tests
+        transfer.
+    """
+    tokens = tokenize(query, index.tokenizer_config)
+    if not tokens:
+        return []
+
+    if ranker is None:
+        ranker = TFIDFRanker()
+
+    results = conjunctive_retrieval(index, tokens, ranker)
+    pairs: list[tuple[str, str]] = []
+    for doc_id, _ in results:
+        url = index.documents[doc_id]
+        body = index.documents_text.get(doc_id, "")
+        snippet = extract_snippet(body, tokens) if body else ""
+        pairs.append((url, snippet))
+    return pairs
+
+
+def find_phrase_with_snippets(
+    index: Index,
+    query: str,
+    ranker: Ranker | None = None,
+) -> list[tuple[str, str]]:
+    """Phrase-mode counterpart of :func:`find_pages_with_snippets`.
+
+    Retrieves pages where the query tokens occur as a consecutive
+    phrase (same contract as :func:`find_phrase`) and produces a
+    snippet for each, anchored on and highlighting the whole phrase
+    as one bracketed unit (``[good friends]`` rather than
+    ``[good] [friends]``). This mirrors the user's intent — they
+    asked for a phrase, the result presentation should respect it.
+    """
+    tokens = tokenize(query, index.tokenizer_config)
+    if not tokens:
+        return []
+
+    if ranker is None:
+        ranker = TFIDFRanker()
+
+    results = phrase_retrieval(index, tokens, ranker)
+    pairs: list[tuple[str, str]] = []
+    for doc_id, _ in results:
+        url = index.documents[doc_id]
+        body = index.documents_text.get(doc_id, "")
+        snippet = (
+            extract_snippet(body, tokens, phrase_mode=True) if body else ""
+        )
+        pairs.append((url, snippet))
+    return pairs
 
 
 def suggest_for_query(
