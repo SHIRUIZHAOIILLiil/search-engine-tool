@@ -109,6 +109,7 @@ search-engine-tool/
 │   └── test_properties.py     # randomised invariant tests
 ├── .coveragerc                # coverage.py configuration
 ├── .gitignore
+├── CHANGELOG.md               # release history (Keep a Changelog format)
 ├── LICENSE                    # MIT
 ├── README.md                  # this file
 ├── requirements.txt           # runtime: requests + beautifulsoup4
