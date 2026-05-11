@@ -353,18 +353,19 @@ def _doc_has_token_in_field(
     field: str,
     token: str,
 ) -> bool:
-    """True if ``doc_id`` has a non-zero ``token`` frequency in ``field``."""
+    """True if ``doc_id`` has a non-zero ``token`` frequency in ``field``.
+
+    Posting and FieldStats are TypedDicts (v1.7.0), so the
+    member accesses below are statically typed — no isinstance
+    guards needed.
+    """
     posting = index.postings.get(token, {}).get(doc_id)
     if not posting:
         return False
-    fields_map = posting.get("fields")
-    if not isinstance(fields_map, dict):
+    field_stats = posting["fields"].get(field)
+    if field_stats is None:
         return False
-    field_stats = fields_map.get(field)
-    if not isinstance(field_stats, dict):
-        return False
-    freq = field_stats.get("frequency", 0)
-    return isinstance(freq, int) and freq > 0
+    return field_stats.get("frequency", 0) > 0
 
 
 def _build_snippet_pairs(

@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator, cast
+from typing import Iterable, Iterator, TypedDict
 
 from src.crawler import CrawledPage
 from src.parser import ParsedFields
@@ -21,7 +21,35 @@ INDEX_VERSION = 5
 # future BM25F-style ranker can weight independently.
 FIELD_NAMES: tuple[str, ...] = ("title", "quote_text", "author", "tag")
 
-Posting = dict[str, object]
+
+class FieldStats(TypedDict):
+    """Per-field statistics inside a posting's ``fields`` map.
+
+    Mirrors the body-level ``frequency``/``positions`` shape so a
+    future BM25F-style ranker can weight structural fields
+    (Lecture 12 "Fields and Extents") independently.
+    """
+
+    frequency: int
+    positions: list[int]
+
+
+class Posting(TypedDict):
+    """One document's entry in a term's posting list.
+
+    v1.7.0: promoted from ``dict[str, object]`` to a proper
+    :class:`~typing.TypedDict` so the integer ``frequency`` and the
+    list ``positions`` carry their types through to mypy without
+    intermediate :func:`typing.cast` calls. The runtime layout is
+    unchanged — TypedDict is a static-checker hint, the in-memory
+    object remains a plain ``dict`` with the same JSON serialisation.
+    """
+
+    frequency: int
+    positions: list[int]
+    fields: dict[str, FieldStats]
+
+
 PostingsByDocId = dict[str, dict[int, Posting]]
 
 
@@ -124,15 +152,8 @@ def build_index(
                 doc_id,
                 _empty_posting(),
             )
-            # ``Posting`` is typed as ``dict[str, object]`` to fit
-            # both ``int`` frequencies and ``list[int]`` positions in
-            # one mapping; ``cast`` is the lightest-weight way to
-            # restore the int invariant for mypy without a wholesale
-            # ``TypedDict`` refactor (queued for v1.7.0).
-            posting["frequency"] = cast(int, posting["frequency"]) + 1
-            positions = posting["positions"]
-            if isinstance(positions, list):
-                positions.append(position)
+            posting["frequency"] += 1
+            posting["positions"].append(position)
 
         # Per-field pass: independent tokenisation per structural slot.
         # A token that appears in a field but never in the body still
@@ -145,23 +166,19 @@ def build_index(
                     _empty_posting(),
                 )
                 fields_map = posting["fields"]
-                if not isinstance(fields_map, dict):
-                    continue
                 field_stats = fields_map.setdefault(
                     field_name,
-                    {"frequency": 0, "positions": []},
+                    FieldStats(frequency=0, positions=[]),
                 )
-                field_stats["frequency"] = int(field_stats["frequency"]) + 1
-                field_positions = field_stats["positions"]
-                if isinstance(field_positions, list):
-                    field_positions.append(position)
+                field_stats["frequency"] += 1
+                field_stats["positions"].append(position)
 
     return index
 
 
 def _empty_posting() -> Posting:
     """Return a fresh posting with the canonical key layout."""
-    return {"frequency": 0, "positions": [], "fields": {}}
+    return Posting(frequency=0, positions=[], fields={})
 
 
 def _iter_named_fields(fields: ParsedFields) -> Iterator[tuple[str, str]]:
