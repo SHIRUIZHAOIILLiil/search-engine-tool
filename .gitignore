@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Benchmark results — keep the directory (via .gitkeep) but exclude
+# generated artefacts; results are reproducible from the runner.
+benchmarks/results/*.json
+benchmarks/results/*.csv
+benchmarks/results/*.md
+!benchmarks/results/.gitkeep
