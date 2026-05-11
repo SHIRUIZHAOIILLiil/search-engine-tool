@@ -31,7 +31,9 @@ The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), 
 - **Connection-pooled crawler** — one `requests.Session` per crawler with a urllib3 retry adapter (`total=3`, exponential backoff, `502/503/504` only) keeps a single transient network blip from aborting a whole crawl.
 - **Schema version guard** — `load` refuses to read indexes written by an incompatible version.
 - **UTF-8 CLI output** — `run_shell` reconfigures stdout so smart quotes and other Unicode characters in scraped quotes render correctly on Windows terminals.
-- **Three CI gates** — ruff lint, mypy type check, and the test suite all run on every push/PR; coverage must stay above 85 %.
+- **Type-safe core** — `Posting` and `FieldStats` are `TypedDict`s (v1.7.0), so the integer frequency and list positions carry their types through to mypy without runtime casts. Runtime layout and JSON serialisation are unchanged.
+- **Four CI gates** — ruff lint, mypy type check, pdoc docstring smoke build, and the test suite all run on every push/PR; coverage must stay above 85 %.
+- **Generated API docs** — `python scripts/build_api_docs.py` produces a browsable `docs/api/index.html` from the source docstrings via [pdoc](https://pdoc.dev/); the CI smoke build fails the pipeline if any docstring fails to parse.
 - **370 tests at 93 %+ coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
 
 ---
@@ -144,6 +146,9 @@ python -m pip install -r requirements-dev.txt
 [`requirements-dev.txt`](requirements-dev.txt) pulls in the runtime requirements plus:
 
 - `coverage` — line + branch coverage measurement (used by the CI gate)
+- `ruff` — lint (CI gate)
+- `mypy` — static type check (CI gate)
+- `pdoc` — generates the browsable API docs from source docstrings
 
 Tested with Python 3.10+.
 
@@ -679,7 +684,35 @@ matrix:
    coverage gate** (current: 93 %+).
 
 A green CI badge above means the latest `main` commit clears all
-three gates (currently 370 tests) on all three supported Python versions.
+four gates (ruff lint, mypy type check, pdoc smoke build, and the
+370-test suite) on all three supported Python versions.
+
+---
+
+## Documentation
+
+Beyond this README, the project ships three reference documents
+that go progressively deeper:
+
+| File | Audience | Content |
+|---|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | New contributor / marker | Repository layout, module decomposition table, ingestion / query pipeline mermaid diagrams, schema evolution `v1`→`v5`, recurring design patterns, extension points, full reference list |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | New contributor | Development setup, the four CI gates, code style (ruff + mypy + docstrings), Conventional Commits convention, branch-per-step workflow, four-layer testing strategy, how to add a feature without breaking the brief, schema-change checklist |
+| [`CHANGELOG.md`](CHANGELOG.md) | Anyone tracing a feature | One entry per release tag in [Keep a Changelog](https://keepachangelog.com/) format, from `v0.1.0` through `v1.7.0` |
+
+### Generated API documentation
+
+`pdoc` turns the source docstrings into a browsable HTML site:
+
+```bash
+python scripts/build_api_docs.py            # writes to docs/api/
+python scripts/build_api_docs.py --clean    # remove stale pages first
+python scripts/build_api_docs.py --smoke    # CI-style verification only
+```
+
+`docs/api/` is gitignored — the artefacts are reproducible from the
+source, and the smoke build in CI fails the pipeline if any
+docstring stops parsing cleanly.
 
 ---
 
