@@ -308,6 +308,83 @@ documents without touching positions. Source:
 
 ---
 
+## Benchmarks
+
+The complexity claims above (TF-IDF *O(|q|)*, skip pointers *O(√N)*,
+TAAT memory *O(unique candidates)*, …) are also exercised empirically
+under [`benchmarks/`](benchmarks/) on synthetic corpora of varying
+scale. Numbers belong in the report; this section explains how to
+reproduce them and how to read the output.
+
+### Reproducing
+
+```powershell
+# Default sweep: sizes 250 / 500 / 1000 / 2000, 5 measured reps per cell.
+python -m benchmarks.run_benchmarks
+
+# Fast development mode: sizes 50 / 100, 2 reps. ~1 second wall-clock.
+python -m benchmarks.run_benchmarks --quick
+
+# Custom sizes and rep count.
+python -m benchmarks.run_benchmarks --sizes 500,5000 --reps 10
+```
+
+Results land in [`benchmarks/results/`](benchmarks/results/) as three
+co-timestamped artefacts: a `.json` file (full data, machine-readable,
+with run metadata), a `.csv` file (flat schema for Excel / pandas),
+and a `.md` file (report-ready tables). All three are gitignored —
+they are reproducible from the runner.
+
+### Reading the output
+
+The runner separates two **algorithm groups** whose numbers are not
+comparable head-to-head:
+
+* **Group A — ranked retrieval** (top-10): DAAT and TAAT, each paired
+  with both TF-IDF and BM25. Output is a scored result list.
+* **Group B — intersection only**: simple conjunctive intersection
+  versus the skip-pointer variant. Output is a raw doc-id list.
+
+Mixing the groups would mislead — Group B is always faster because it
+does no scoring, regardless of the intersection algorithm's actual
+quality. The lecture-13 question "does skip pointer help?" only has
+meaning within Group B.
+
+Three **query shapes** exercise the lecture-13 trade-offs:
+
+| shape | composition | what it stresses |
+|---|---|---|
+| `single_common` | 1 high-frequency token | baseline (small candidate set) |
+| `multi_balanced` | 2 medium-frequency tokens | worst case for TAAT's accumulator dictionary |
+| `skewed_rare_common` | 1 rare + 1 common token | canonical skip-pointer win case (Lecture 13 slides 18–23) |
+
+Three independent token instances are drawn per shape, so the table
+shows within-shape variance rather than a single point estimate.
+
+### Methodology notes
+
+* **Warmup**: the first repetition of every cell is discarded
+  (absorbs first-call costs like dict resizing).
+* **Time and memory measured in separate passes**. `tracemalloc`
+  adds 5–10× overhead to the code under test, so mixing it into the
+  timing pass would contaminate the numbers.
+* **Reported statistic**: median plus inter-quartile range across the
+  measured reps. IQR is more robust to outliers than min/max, which
+  follows IR-evaluation convention.
+* **Reproducibility metadata** in every output: git SHA, Python
+  version, platform, processor, run timestamp, full CLI parameters.
+
+The benchmark is **not run on CI** — timing noise from shared runners
+would make any threshold either too loose to catch regressions or too
+strict to be stable. Performance regressions on the *correctness*
+path are still caught by [`tests/test_performance.py`](tests/test_performance.py),
+which uses generous fixed budgets.
+
+See [`benchmarks/run_benchmarks.py`](benchmarks/run_benchmarks.py)
+for the implementation.
+
+---
+
 ## Design decisions
 
 | Choice | Why |
@@ -364,7 +441,7 @@ documents without touching positions. Source:
 python -m unittest discover
 ```
 
-The test suite currently runs **207 tests** with no warnings and reaches **92.5 % line + branch coverage** of `src/`.
+The test suite currently runs **219 tests** with no warnings and reaches **92.5 % line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
 
 | File | Layer | Coverage |
 |---|---|---|
@@ -380,6 +457,7 @@ The test suite currently runs **207 tests** with no warnings and reaches **92.5 
 | [`tests/test_integration.py`](tests/test_integration.py) | Integration | Full pipeline: stub HTTP → crawl → build → save/load → find / phrase |
 | [`tests/test_performance.py`](tests/test_performance.py) | Performance | Regression budgets on 500-page synthetic corpus |
 | [`tests/test_properties.py`](tests/test_properties.py) | Property | Invariants over 20-trial randomised inputs (save/load identity, phrase ⊆ AND, BM25 ≥ 0, …) |
+| [`tests/test_benchmarks.py`](tests/test_benchmarks.py) | Unit / Smoke | Deterministic corpus contract; query-selection shapes; runner end-to-end with tiny inputs |
 
 ### Continuous integration
 
@@ -390,7 +468,7 @@ Every push to `main` and every pull request triggers
 * prints a per-module coverage report with missing-line numbers, and
 * **fails the build if total coverage drops below 85 %** (current: 92.5 %).
 
-A green CI badge above means the latest `main` commit passes all 207 tests on all three supported Python versions.
+A green CI badge above means the latest `main` commit passes all 219 tests on all three supported Python versions.
 
 ---
 
