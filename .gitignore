@@ -223,3 +223,8 @@ benchmarks/results/*.json
 benchmarks/results/*.csv
 benchmarks/results/*.md
 !benchmarks/results/.gitkeep
+
+# Generated API documentation — pdoc output is reproducible from
+# the docstrings via scripts/build_api_docs.py; no value in
+# committing it. Hosting on GitHub Pages would be a separate setup.
+docs/api/

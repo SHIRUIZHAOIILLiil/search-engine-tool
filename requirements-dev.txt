@@ -2,3 +2,4 @@
 coverage>=7.0
 ruff>=0.4
 mypy>=1.10
+pdoc>=14.0
