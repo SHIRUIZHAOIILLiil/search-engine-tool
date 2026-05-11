@@ -26,12 +26,13 @@ The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), 
 - **Opt-in text normalisation** — `TokenizerConfig` enables a ~25-word English stopword filter and Porter Step 1 stemming; default is off to preserve brief-compliant semantics.
 - **Query suggestions ("Did you mean...?")** — when `find` returns zero results and at least one query token is missing from the index vocabulary, the CLI offers a reformulated query using Levenshtein-distance lookups (Manning et al., Ch. 3).
 - **Highlighted snippets** — each `find` result now prints a 60-80 character body excerpt with the matching tokens wrapped in `[brackets]` (Manning et al., Ch. 8.7 "Summarization and snippet generation"). Phrase queries highlight the whole phrase as one unit.
+- **Faceted search** — `find author=einstein wisdom` filters by structural field on top of the conjunctive AND match. Same field with multiple values is OR (`tag=science tag=physics`); across fields is AND. Builds on Lecture 12's "Fields and Extents" representation already present in every posting.
 - **Atomic index persistence** — `save_index` writes via a sibling `.tmp` file and `os.replace`, so a crash during `build` leaves the previous good `index.json` untouched.
 - **Connection-pooled crawler** — one `requests.Session` per crawler with a urllib3 retry adapter (`total=3`, exponential backoff, `502/503/504` only) keeps a single transient network blip from aborting a whole crawl.
 - **Schema version guard** — `load` refuses to read indexes written by an incompatible version.
 - **UTF-8 CLI output** — `run_shell` reconfigures stdout so smart quotes and other Unicode characters in scraped quotes render correctly on Windows terminals.
 - **Three CI gates** — ruff lint, mypy type check, and the test suite all run on every push/PR; coverage must stay above 85 %.
-- **302 tests at 93 %+ coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
+- **338 tests at 93 %+ coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
 
 ---
 
@@ -184,6 +185,16 @@ https://quotes.toscrape.com/page/1/
 https://quotes.toscrape.com/page/1/
   ... we are all [good friends] here, sharing the journey ...
 
+> find author=einstein wisdom
+https://quotes.toscrape.com/page/3/
+  ... the only source of [wisdom] is experience ...
+
+> find tag=science tag=physics
+https://quotes.toscrape.com/page/4/
+  imagination is more important than knowledge ...
+https://quotes.toscrape.com/page/9/
+  the important thing is not to stop questioning ...
+
 > find indiference
 No matching pages found.
 Did you mean: indifference?
@@ -192,7 +203,10 @@ Did you mean: indifference?
 Each `find` result is followed by a context snippet on the next line,
 indented two spaces and with the matched terms wrapped in
 `[brackets]`. Quoted phrase queries highlight the whole phrase as one
-unit; conjunctive queries bracket each token independently.
+unit; conjunctive queries bracket each token independently. Args of
+the shape `field=value` (one of `author`, `tag`, `title`, `quote_text`)
+become facet filters layered on top of the free-text match — facets
+and phrases can be combined freely (`find "good friends" author=wilde`).
 
 ---
 
@@ -412,6 +426,56 @@ whose body contains only `running` — the raw-text substring lookup
 sees `run` as not present. Default configuration has stemming off, so
 this is unobservable on the brief's primary workflow.
 
+### Faceted search (Lecture 12 Fields & Extents)
+
+`find` accepts `field=value` arguments that filter results by the
+structural fields already populated on every posting (`title`,
+`quote_text`, `author`, `tag`). The free-text portion (anything
+without an `=`) follows the brief's conjunctive AND semantics
+verbatim — facets are strictly additive syntax sugar, never a
+replacement.
+
+```
+> find author=einstein wisdom         # Einstein quotes containing "wisdom"
+> find tag=science tag=physics        # docs tagged science OR physics
+> find author=wilde tag=wit           # author=wilde AND tag=wit
+> find author="oscar wilde" wisdom    # multi-token value via quotes
+> find "good friends" author=einstein # phrase + facet combine freely
+> find tag=science                    # facet-only browse (no free text)
+```
+
+**Semantics** (settled in the v1.5.0 design):
+
+* **Within one field, multiple values are OR.** `tag=science tag=physics`
+  keeps any document whose `tag` field contains `science` OR `physics`
+  — the conventional facet-UI behaviour where ticking two tags under
+  one heading widens the result set.
+* **Across fields, the join is AND.** `author=wilde tag=wit` requires
+  both filters to match the same document.
+* **Multi-token values are AND inside the value.** `author="oscar wilde"`
+  requires both `oscar` AND `wilde` to appear in the same document's
+  `author` field — the natural shape of multi-word names.
+
+**Validation**: unknown fields (`author=einstein` works, `athor=einstein`
+errors) and empty values (`author=`) raise immediately with a list of
+known fields, so a typo produces a clear error rather than a silent
+empty result.
+
+**Implementation** ([`src/search.py::filter_by_facets`](src/search.py)):
+the facet pass is a *post-filter* on conjunctive / phrase retrieval
+results. Each surviving document is checked against the facets via
+the per-field statistics on every posting
+(`posting["fields"][field_name]["frequency"]`) — Lecture 12's
+"Fields and Extents" structure paying off without needing additional
+index columns. Tokenisation of facet values runs through the same
+`index.tokenizer_config` that built the index so case-folding stays
+consistent.
+
+When the query has no free-text tokens (a pure facet browse like
+`find tag=science`), the result list is doc_id-ordered and each
+snippet falls back to a plain ~70-character head-of-body preview
+without highlights.
+
 ---
 
 ## Benchmarks
@@ -547,7 +611,7 @@ for the implementation.
 python -m unittest discover
 ```
 
-The test suite currently runs **302 tests** with no warnings and reaches **93 %+ line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
+The test suite currently runs **338 tests** with no warnings and reaches **93 %+ line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
 
 | File | Layer | Coverage |
 |---|---|---|
@@ -583,7 +647,7 @@ matrix:
    coverage gate** (current: 93 %+).
 
 A green CI badge above means the latest `main` commit clears all
-three gates on all three supported Python versions.
+three gates (currently 338 tests) on all three supported Python versions.
 
 ---
 
