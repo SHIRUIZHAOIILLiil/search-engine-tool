@@ -1,6 +1,5 @@
 import json
 import unittest
-
 from tempfile import TemporaryDirectory
 
 from src.crawler import CrawledPage

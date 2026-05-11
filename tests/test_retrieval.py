@@ -1,9 +1,8 @@
+import random
 import unittest
 
 from src.indexer import Index
 from src.ranker import BM25Ranker, TFIDFRanker
-import random
-
 from src.retrieval import (
     conjunctive_match,
     conjunctive_match_with_skip,

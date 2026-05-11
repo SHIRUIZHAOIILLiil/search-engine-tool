@@ -37,7 +37,10 @@ class SynthesizePagesTests(unittest.TestCase):
         first = synthesize_pages(50, seed=42)
         second = synthesize_pages(50, seed=42)
         self.assertEqual(len(first), len(second))
-        for page_a, page_b in zip(first, second):
+        # strict=True is safe here — we already asserted equal length
+        # above; the explicit flag silences ruff B905 and pins the
+        # invariant for future readers.
+        for page_a, page_b in zip(first, second, strict=True):
             self.assertEqual(page_a.url, page_b.url)
             self.assertEqual(page_a.text, page_b.text)
 

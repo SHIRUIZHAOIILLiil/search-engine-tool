@@ -24,7 +24,6 @@ from src.indexer import build_index, load_index, save_index
 from src.main import handle_command
 from src.search import find_pages, find_phrase, print_word
 
-
 # A tiny synthetic site with realistic quotes.toscrape.com markup.
 SITE: dict[str, str] = {
     "https://example.com/": """
