@@ -4,11 +4,13 @@ from src.crawler import CrawledPage
 from src.indexer import Index, build_index
 from src.ranker import TFIDFRanker
 from src.search import (
+    filter_by_facets,
     find_pages,
     find_pages_with_snippets,
     find_phrase,
     find_phrase_with_snippets,
     format_did_you_mean,
+    parse_facets,
     print_word,
     suggest_for_query,
 )
@@ -351,6 +353,356 @@ class FindPhraseWithSnippetsTests(unittest.TestCase):
         results = find_phrase_with_snippets(index, "good friends")
 
         self.assertEqual(results, [("page-1", "")])
+
+
+def _build_faceted_index() -> Index:
+    """Two-doc fixture with author/tag/quote_text fields populated.
+
+    Hand-built rather than going through ``build_index`` so the test
+    body exercises the facet matcher's contract on a fixed shape.
+    Doc 0 is Einstein on science; Doc 1 is Wilde on wit.
+    """
+    return Index(
+        documents={
+            0: "https://example.com/einstein/",
+            1: "https://example.com/wilde/",
+        },
+        documents_text={
+            0: "imagination is more important than knowledge",
+            1: "always forgive your enemies; nothing annoys them so much",
+        },
+        postings={
+            # Body-level postings:
+            "imagination": {0: {
+                "frequency": 1,
+                "positions": [0],
+                "fields": {},
+            }},
+            "knowledge": {0: {
+                "frequency": 1,
+                "positions": [5],
+                "fields": {},
+            }},
+            "always": {1: {
+                "frequency": 1,
+                "positions": [0],
+                "fields": {},
+            }},
+            "forgive": {1: {
+                "frequency": 1,
+                "positions": [1],
+                "fields": {},
+            }},
+            # Field postings (author / tag / quote_text). Each posting
+            # carries the same body-level keys plus the per-field
+            # entry — that is the on-disk shape build_index produces.
+            "einstein": {0: {
+                "frequency": 0,
+                "positions": [],
+                "fields": {"author": {"frequency": 1, "positions": [0]}},
+            }},
+            "wilde": {1: {
+                "frequency": 0,
+                "positions": [],
+                "fields": {"author": {"frequency": 1, "positions": [1]}},
+            }},
+            "oscar": {1: {
+                "frequency": 0,
+                "positions": [],
+                "fields": {"author": {"frequency": 1, "positions": [0]}},
+            }},
+            "science": {0: {
+                "frequency": 0,
+                "positions": [],
+                "fields": {"tag": {"frequency": 1, "positions": [0]}},
+            }},
+            "wit": {1: {
+                "frequency": 0,
+                "positions": [],
+                "fields": {"tag": {"frequency": 1, "positions": [0]}},
+            }},
+            "humour": {1: {
+                "frequency": 0,
+                "positions": [],
+                "fields": {"tag": {"frequency": 1, "positions": [1]}},
+            }},
+        },
+    )
+
+
+class FilterByFacetsTests(unittest.TestCase):
+    """``filter_by_facets`` is the core of v1.5.0 — verifies the
+    OR-within-field / AND-across-field / AND-within-value semantics.
+    """
+
+    def setUp(self):
+        self.index = _build_faceted_index()
+
+    def test_empty_facets_returns_input_unchanged(self):
+        # Brief-compliance escape hatch: no ``=`` in user input means
+        # facets == {} and the filter pass is a pure passthrough.
+        self.assertEqual(filter_by_facets(self.index, [0, 1], {}), [0, 1])
+
+    def test_single_facet_keeps_matching_doc(self):
+        result = filter_by_facets(self.index, [0, 1], {"author": ["einstein"]})
+
+        self.assertEqual(result, [0])
+
+    def test_single_facet_removes_non_matching_doc(self):
+        result = filter_by_facets(self.index, [0, 1], {"author": ["wilde"]})
+
+        self.assertEqual(result, [1])
+
+    def test_or_within_field_multiple_values(self):
+        # tag=science OR tag=wit keeps both docs.
+        result = filter_by_facets(
+            self.index, [0, 1], {"tag": ["science", "wit"]}
+        )
+
+        self.assertEqual(result, [0, 1])
+
+    def test_or_within_field_when_only_one_value_matches(self):
+        # tag=science OR tag=unknown — still keeps doc 0 via science.
+        result = filter_by_facets(
+            self.index, [0, 1], {"tag": ["science", "unknown"]}
+        )
+
+        self.assertEqual(result, [0])
+
+    def test_and_across_fields_intersects(self):
+        # author=wilde AND tag=wit — only doc 1 satisfies both.
+        result = filter_by_facets(
+            self.index, [0, 1], {"author": ["wilde"], "tag": ["wit"]}
+        )
+
+        self.assertEqual(result, [1])
+
+    def test_and_across_fields_excludes_when_one_fails(self):
+        # author=wilde AND tag=science — wilde is doc 1, science is
+        # doc 0; intersection is empty.
+        result = filter_by_facets(
+            self.index, [0, 1], {"author": ["wilde"], "tag": ["science"]}
+        )
+
+        self.assertEqual(result, [])
+
+    def test_and_within_multi_token_value(self):
+        # ``author="oscar wilde"`` requires BOTH tokens in the author
+        # field of the same doc. Doc 1 has both; doc 0 has neither.
+        result = filter_by_facets(
+            self.index, [0, 1], {"author": ["oscar wilde"]}
+        )
+
+        self.assertEqual(result, [1])
+
+    def test_multi_token_value_fails_when_only_one_token_present(self):
+        # ``author="oscar einstein"`` — doc 0 has einstein, doc 1 has
+        # oscar; neither has BOTH in author → empty result.
+        result = filter_by_facets(
+            self.index, [0, 1], {"author": ["oscar einstein"]}
+        )
+
+        self.assertEqual(result, [])
+
+    def test_filter_preserves_input_ordering(self):
+        # Ranking order from upstream retrieval must survive the
+        # filter — important for snippet pairs whose order reflects
+        # the TF-IDF / BM25 ranking.
+        result = filter_by_facets(
+            self.index, [1, 0], {"tag": ["science", "wit"]}
+        )
+
+        self.assertEqual(result, [1, 0])
+
+    def test_unknown_facet_value_yields_empty_for_that_field(self):
+        # ``author=newton`` matches nothing — no doc survives.
+        result = filter_by_facets(self.index, [0, 1], {"author": ["newton"]})
+
+        self.assertEqual(result, [])
+
+
+class FindWithFacetsTests(unittest.TestCase):
+    """End-to-end ``find_pages_with_snippets`` and
+    ``find_phrase_with_snippets`` paths with facets layered on.
+    """
+
+    def setUp(self):
+        self.index = _build_faceted_index()
+
+    def test_free_text_plus_facet_filters_to_intersection(self):
+        # ``knowledge`` matches doc 0 by free text; author=einstein
+        # facet keeps it. Doc 1 fails the free-text match.
+        results = find_pages_with_snippets(
+            self.index, "knowledge", facets={"author": ["einstein"]}
+        )
+
+        self.assertEqual(len(results), 1)
+        url, snippet = results[0]
+        self.assertEqual(url, "https://example.com/einstein/")
+        self.assertIn("[knowledge]", snippet)
+
+    def test_free_text_match_filtered_out_by_non_matching_facet(self):
+        # ``knowledge`` matches doc 0, but author=wilde does not —
+        # results must be empty even though the free-text match exists.
+        results = find_pages_with_snippets(
+            self.index, "knowledge", facets={"author": ["wilde"]}
+        )
+
+        self.assertEqual(results, [])
+
+    def test_facet_only_browse_returns_all_matching_docs_with_preview(self):
+        # No free text + tag=science: doc 0 alone is returned with a
+        # plain head-of-body preview (no highlighted tokens since
+        # there is nothing to highlight).
+        results = find_pages_with_snippets(
+            self.index, "", facets={"tag": ["science"]}
+        )
+
+        self.assertEqual(len(results), 1)
+        url, snippet = results[0]
+        self.assertEqual(url, "https://example.com/einstein/")
+        # Preview is the head of the body, no brackets.
+        self.assertNotIn("[", snippet)
+        self.assertIn("imagination", snippet)
+
+    def test_empty_query_and_empty_facets_returns_empty_list(self):
+        # The "nothing requested" case must not browse the whole corpus.
+        self.assertEqual(find_pages_with_snippets(self.index, "", facets={}), [])
+
+    def test_phrase_query_plus_facet_intersects(self):
+        # Phrase mode + facet: build a tiny phrase-friendly index.
+        index = Index(
+            documents={0: "https://example.com/page-1/"},
+            documents_text={0: "We are all good friends here together."},
+            postings={
+                "good": {0: {
+                    "frequency": 1,
+                    "positions": [3],
+                    "fields": {},
+                }},
+                "friends": {0: {
+                    "frequency": 1,
+                    "positions": [4],
+                    "fields": {},
+                }},
+                "einstein": {0: {
+                    "frequency": 0,
+                    "positions": [],
+                    "fields": {"author": {"frequency": 1, "positions": [0]}},
+                }},
+            },
+            doc_lengths={0: 8},
+        )
+
+        # Phrase matches AND author=einstein matches → result returned.
+        kept = find_phrase_with_snippets(
+            index, "good friends", facets={"author": ["einstein"]}
+        )
+        self.assertEqual(len(kept), 1)
+        self.assertIn("[good friends]", kept[0][1])
+
+        # Phrase matches but author=wilde fails → result filtered out.
+        dropped = find_phrase_with_snippets(
+            index, "good friends", facets={"author": ["wilde"]}
+        )
+        self.assertEqual(dropped, [])
+
+
+class ParseFacetsTests(unittest.TestCase):
+    """Parser for ``field=value`` facet syntax (v1.5.0).
+
+    Pins the brief-compatibility invariant: any args list that
+    contains no ``=`` characters must route through unchanged so
+    the existing ``find good friends`` semantics stay byte-identical.
+    """
+
+    def test_no_facets_returns_empty_dict_and_joined_free_text(self):
+        # The brief-compliant path: zero "=" anywhere → all args
+        # collapse to the free-text query body, no facets parsed.
+        facets, free_text = parse_facets(["good", "friends"])
+
+        self.assertEqual(facets, {})
+        self.assertEqual(free_text, "good friends")
+
+    def test_empty_args_returns_empty_facets_and_empty_text(self):
+        self.assertEqual(parse_facets([]), ({}, ""))
+
+    def test_single_facet_with_free_text(self):
+        facets, free_text = parse_facets(["author=einstein", "wisdom"])
+
+        self.assertEqual(facets, {"author": ["einstein"]})
+        self.assertEqual(free_text, "wisdom")
+
+    def test_facet_value_with_internal_space_via_shlex_handling(self):
+        # ``shlex.split('find author="oscar wilde" wisdom')`` produces
+        # ``["find", "author=oscar wilde", "wisdom"]`` — a single arg
+        # with a space inside the value half. The parser must keep
+        # the whole value intact, not split on the space.
+        facets, free_text = parse_facets(["author=oscar wilde", "wisdom"])
+
+        self.assertEqual(facets, {"author": ["oscar wilde"]})
+        self.assertEqual(free_text, "wisdom")
+
+    def test_multiple_facets_different_fields_aggregate(self):
+        facets, _ = parse_facets(["author=einstein", "tag=science"])
+
+        self.assertEqual(facets, {"author": ["einstein"], "tag": ["science"]})
+
+    def test_multiple_values_same_field_aggregate_into_list_for_or_semantics(self):
+        # Disjunctive multi-value on one field — matches conventional
+        # facet UI behaviour ("tick both Science and Physics").
+        facets, _ = parse_facets(["tag=science", "tag=physics"])
+
+        self.assertEqual(facets, {"tag": ["science", "physics"]})
+
+    def test_facet_only_query_returns_empty_free_text(self):
+        # ``find author=einstein`` with no free-text words is valid —
+        # browse all Einstein quotes.
+        facets, free_text = parse_facets(["author=einstein"])
+
+        self.assertEqual(facets, {"author": ["einstein"]})
+        self.assertEqual(free_text, "")
+
+    def test_facet_field_name_is_case_normalised(self):
+        # ``Author=Einstein`` works the same as ``author=einstein``
+        # so the user does not have to remember internal capitalisation.
+        facets, _ = parse_facets(["Author=Einstein", "AUTHOR=newton"])
+
+        self.assertEqual(facets, {"author": ["Einstein", "newton"]})
+
+    def test_unknown_field_raises_value_error_listing_known_fields(self):
+        # Typo detection. The error message must list what is allowed
+        # so the user can correct without consulting the docs.
+        with self.assertRaises(ValueError) as ctx:
+            parse_facets(["athor=einstein", "wisdom"])
+
+        msg = str(ctx.exception)
+        self.assertIn("Unknown facet field", msg)
+        self.assertIn("athor", msg)
+        self.assertIn("author", msg)
+
+    def test_empty_field_raises_value_error(self):
+        # ``=einstein`` has nothing before the ``=`` — clear typo.
+        with self.assertRaises(ValueError) as ctx:
+            parse_facets(["=einstein"])
+
+        self.assertIn("Empty facet field", str(ctx.exception))
+
+    def test_empty_value_raises_value_error(self):
+        # ``author=`` is an empty filter; refusing to interpret it
+        # prevents a "matches everything" surprise.
+        with self.assertRaises(ValueError) as ctx:
+            parse_facets(["author=", "wisdom"])
+
+        self.assertIn("Empty facet value", str(ctx.exception))
+
+    def test_equals_in_free_text_word_is_caught_as_facet(self):
+        # If a user inputs a token with an unintended ``=``, the
+        # parser treats it as a facet attempt — which then fails the
+        # field-name check with a clear error. Better than silently
+        # routing odd input through the free-text path.
+        with self.assertRaises(ValueError):
+            parse_facets(["x=y"])
 
 
 class SuggestForQueryTests(unittest.TestCase):

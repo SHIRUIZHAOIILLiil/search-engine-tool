@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from src.indexer import Index
+from typing import Iterable
+
+from src.indexer import FIELD_NAMES, Index
 from src.ranker import Ranker, TFIDFRanker
 from src.retrieval import conjunctive_retrieval, phrase_retrieval
 from src.snippet import extract_snippet
@@ -99,10 +101,84 @@ def find_phrase(
     return [index.documents[doc_id] for doc_id, _ in results]
 
 
+def parse_facets(
+    args: list[str],
+    valid_fields: tuple[str, ...] = FIELD_NAMES,
+) -> tuple[dict[str, list[str]], str]:
+    """Split CLI args into structural facet filters and free-text tokens.
+
+    A facet has the shape ``field=value`` (e.g. ``author=einstein``).
+    Args without an ``=`` are free-text tokens and join into the
+    query body that ``find_pages`` / ``find_phrase`` consume — this
+    is what preserves the brief's plain ``find good friends`` form:
+    a query that contains zero ``=`` characters routes through
+    exactly the same path it did before v1.5.0.
+
+    Multiple values for the same field (e.g. ``tag=science tag=physics``)
+    are *disjunctive* (OR) — matching the conventional facet UI
+    behaviour where ticking two tags under one heading widens the
+    result set. Across different fields, facets are conjunctive (AND);
+    that combination is enforced by the caller, not this parser.
+
+    Args:
+        args: Tokens already produced by ``shlex.split`` of the CLI
+            input. Quoted values like ``author="oscar wilde"`` arrive
+            as a single argument here — shlex strips the quotes.
+        valid_fields: Allowed left-hand sides of ``=``. Defaults to
+            :data:`src.indexer.FIELD_NAMES`. Anything else raises so
+            the user sees ``Unknown facet field: foo`` rather than
+            having their typo silently match zero documents.
+
+    Returns:
+        ``({field: [value, ...]}, free_text)`` where ``free_text`` is
+        the space-joined non-facet args (an empty string if every
+        arg was a facet — facet-only queries are valid).
+
+    Raises:
+        ValueError: if a facet uses an unknown field, has an empty
+            value (``author=``), or has an empty field (``=value``).
+    """
+    facets: dict[str, list[str]] = {}
+    free_tokens: list[str] = []
+    valid_set = set(valid_fields)
+
+    for arg in args:
+        if "=" not in arg:
+            free_tokens.append(arg)
+            continue
+
+        field, _, value = arg.partition("=")
+        # Normalise the field name to the canonical lowercase form
+        # so that ``Author=Einstein`` works the same as ``author=einstein``.
+        # Values are *not* normalised here; the retrieval layer
+        # applies the tokeniser when comparing them against postings,
+        # which handles case-folding consistently with the index.
+        field = field.lower()
+
+        if not field:
+            raise ValueError(
+                f"Empty facet field in '{arg}' — write field=value"
+            )
+        if field not in valid_set:
+            raise ValueError(
+                f"Unknown facet field: {field!r}. "
+                f"Known fields: {', '.join(sorted(valid_set))}"
+            )
+        if not value:
+            raise ValueError(
+                f"Empty facet value for {field!r} in '{arg}'"
+            )
+
+        facets.setdefault(field, []).append(value)
+
+    return facets, " ".join(free_tokens)
+
+
 def find_pages_with_snippets(
     index: Index,
     query: str,
     ranker: Ranker | None = None,
+    facets: dict[str, list[str]] | None = None,
 ) -> list[tuple[str, str]]:
     """Find pages plus a highlighted context snippet for each result.
 
@@ -113,6 +189,16 @@ def find_pages_with_snippets(
     the earliest matching token in the body, with every query token
     occurrence wrapped in ``[brackets]`` for visual emphasis.
 
+    ``facets`` (v1.5.0) layers a Lecture-12-"Fields and Extents"
+    filter on top of the conjunctive match: each key is a structural
+    field name (``author`` / ``tag`` / ``title`` / ``quote_text``) and
+    each value is a list of accepted values. Values within one field
+    are disjunctive (OR), values across fields are conjunctive (AND).
+    When ``query`` is empty but facets are non-empty, every indexed
+    document is a candidate and facets alone decide the result set;
+    the snippet then falls back to a plain ~70-char preview without
+    highlights since there are no free-text tokens to anchor on.
+
     A pre-v1.4.0 (INDEX_VERSION 4) index loaded into the current
     process would have an empty :attr:`Index.documents_text`; this
     function then returns an empty snippet string for that document,
@@ -120,31 +206,36 @@ def find_pages_with_snippets(
     ``build`` command to restore snippets.
 
     Returns:
-        ``[(url, snippet), ...]`` ordered by relevance. Order matches
-        :func:`find_pages` exactly so existing relevance tests
-        transfer.
+        ``[(url, snippet), ...]`` ordered by relevance for free-text
+        queries, or by doc_id ascending for facet-only queries.
     """
+    facets = facets or {}
     tokens = tokenize(query, index.tokenizer_config)
-    if not tokens:
+
+    if tokens:
+        # Free-text path: existing retrieval, then facet post-filter.
+        if ranker is None:
+            ranker = TFIDFRanker()
+        scored = conjunctive_retrieval(index, tokens, ranker)
+        candidate_doc_ids = [doc_id for doc_id, _ in scored]
+        candidate_doc_ids = filter_by_facets(index, candidate_doc_ids, facets)
+    elif facets:
+        # Facet-only browse: no relevance signal, deterministic order.
+        candidate_doc_ids = filter_by_facets(
+            index, sorted(index.documents.keys()), facets
+        )
+    else:
+        # Empty query, no facets — nothing to do.
         return []
 
-    if ranker is None:
-        ranker = TFIDFRanker()
-
-    results = conjunctive_retrieval(index, tokens, ranker)
-    pairs: list[tuple[str, str]] = []
-    for doc_id, _ in results:
-        url = index.documents[doc_id]
-        body = index.documents_text.get(doc_id, "")
-        snippet = extract_snippet(body, tokens) if body else ""
-        pairs.append((url, snippet))
-    return pairs
+    return _build_snippet_pairs(index, candidate_doc_ids, tokens, phrase_mode=False)
 
 
 def find_phrase_with_snippets(
     index: Index,
     query: str,
     ranker: Ranker | None = None,
+    facets: dict[str, list[str]] | None = None,
 ) -> list[tuple[str, str]]:
     """Phrase-mode counterpart of :func:`find_pages_with_snippets`.
 
@@ -152,9 +243,18 @@ def find_phrase_with_snippets(
     phrase (same contract as :func:`find_phrase`) and produces a
     snippet for each, anchored on and highlighting the whole phrase
     as one bracketed unit (``[good friends]`` rather than
-    ``[good] [friends]``). This mirrors the user's intent — they
-    asked for a phrase, the result presentation should respect it.
+    ``[good] [friends]``).
+
+    The optional ``facets`` parameter filters the result set in the
+    same way as :func:`find_pages_with_snippets`. Phrase mode plus
+    facets makes ``find "good friends" author=einstein`` work end
+    to end — both filters must match.
+
+    A pure-facet phrase query (empty phrase) is not meaningful —
+    it returns ``[]`` rather than browsing the corpus. Use
+    :func:`find_pages_with_snippets` for the facet-only browse case.
     """
+    facets = facets or {}
     tokens = tokenize(query, index.tokenizer_config)
     if not tokens:
         return []
@@ -162,16 +262,156 @@ def find_phrase_with_snippets(
     if ranker is None:
         ranker = TFIDFRanker()
 
-    results = phrase_retrieval(index, tokens, ranker)
+    scored = phrase_retrieval(index, tokens, ranker)
+    candidate_doc_ids = [doc_id for doc_id, _ in scored]
+    candidate_doc_ids = filter_by_facets(index, candidate_doc_ids, facets)
+
+    return _build_snippet_pairs(index, candidate_doc_ids, tokens, phrase_mode=True)
+
+
+def filter_by_facets(
+    index: Index,
+    doc_ids: list[int] | Iterable[int],
+    facets: dict[str, list[str]],
+) -> list[int]:
+    """Return only the ``doc_ids`` that satisfy every facet predicate.
+
+    Semantics (settled in the v1.5.0 step preamble):
+
+    * **Within one field, multiple values are OR.** ``tag=science
+      tag=physics`` keeps any document whose ``tag`` field contains
+      ``science`` OR ``physics`` — matches the facet-UI convention.
+    * **Across fields, the AND join is implicit.** ``author=einstein
+      tag=science`` keeps documents that have both filters satisfied.
+    * **Multi-token values are AND inside the value.** ``author="oscar
+      wilde"`` requires both ``oscar`` AND ``wilde`` to appear inside
+      the ``author`` field's posting — the conjunctive shape of
+      multi-word names.
+
+    Facet matching uses the per-field statistics already stored on
+    every posting (``posting["fields"][field_name]["frequency"]``) so
+    no extra index structure is needed — Lecture 12's "Fields and
+    Extents" representation pays off here. Tokenisation of the value
+    goes through the same ``index.tokenizer_config`` that built the
+    index, so case-folding and (if configured) stemming match.
+
+    An empty ``facets`` dict is a no-op; the input list is returned
+    unchanged. This is the brief-compliance escape hatch: when the
+    parser produces ``facets == {}`` (no ``=`` in the args), the
+    filter pass is invisible.
+    """
+    if not facets:
+        return list(doc_ids)
+
+    surviving: list[int] = []
+    for doc_id in doc_ids:
+        if all(
+            _doc_matches_field(index, doc_id, field, values)
+            for field, values in facets.items()
+        ):
+            surviving.append(doc_id)
+    return surviving
+
+
+def _doc_matches_field(
+    index: Index,
+    doc_id: int,
+    field: str,
+    values: list[str],
+) -> bool:
+    """True if ``doc_id`` satisfies *any* of ``values`` on ``field``.
+
+    Iterates the values disjunctively (OR). Each value is itself
+    tokenised; a multi-token value requires *all* its tokens to
+    appear in the field (e.g. ``author=oscar wilde`` requires both
+    ``oscar`` and ``wilde`` in the author field of the same doc).
+    """
+    config = index.tokenizer_config
+    for value in values:
+        value_tokens = tokenize(value, config)
+        if not value_tokens:
+            continue
+        if all(
+            _doc_has_token_in_field(index, doc_id, field, tok)
+            for tok in value_tokens
+        ):
+            return True
+    return False
+
+
+def _doc_has_token_in_field(
+    index: Index,
+    doc_id: int,
+    field: str,
+    token: str,
+) -> bool:
+    """True if ``doc_id`` has a non-zero ``token`` frequency in ``field``."""
+    posting = index.postings.get(token, {}).get(doc_id)
+    if not posting:
+        return False
+    fields_map = posting.get("fields")
+    if not isinstance(fields_map, dict):
+        return False
+    field_stats = fields_map.get(field)
+    if not isinstance(field_stats, dict):
+        return False
+    freq = field_stats.get("frequency", 0)
+    return isinstance(freq, int) and freq > 0
+
+
+def _build_snippet_pairs(
+    index: Index,
+    doc_ids: list[int],
+    tokens: list[str],
+    *,
+    phrase_mode: bool,
+) -> list[tuple[str, str]]:
+    """Assemble ``(url, snippet)`` pairs for the final result list.
+
+    Common back-end for :func:`find_pages_with_snippets` and
+    :func:`find_phrase_with_snippets` so both paths share one
+    snippet-generation code path.
+
+    When ``tokens`` is empty (facet-only browse from
+    :func:`find_pages_with_snippets`), the snippet falls back to a
+    plain ~70-char head-of-body preview: there are no query tokens
+    to highlight, but a preview is still much more informative than
+    a bare URL when the user is browsing a tag or author.
+    """
     pairs: list[tuple[str, str]] = []
-    for doc_id, _ in results:
+    for doc_id in doc_ids:
         url = index.documents[doc_id]
         body = index.documents_text.get(doc_id, "")
-        snippet = (
-            extract_snippet(body, tokens, phrase_mode=True) if body else ""
-        )
+        if not body:
+            pairs.append((url, ""))
+            continue
+        if tokens:
+            snippet = extract_snippet(body, tokens, phrase_mode=phrase_mode)
+        else:
+            snippet = _preview_head(body)
         pairs.append((url, snippet))
     return pairs
+
+
+def _preview_head(body: str, max_chars: int = 70) -> str:
+    """Return the first ``~max_chars`` of body as a plain preview.
+
+    Used for facet-only queries where there are no query tokens to
+    anchor a highlighted snippet on. The result is whitespace-
+    collapsed and snapped to a word boundary so the preview reads
+    as a sentence fragment rather than a truncated word, then
+    ``...`` is appended if any content was cut.
+    """
+    collapsed = " ".join(body.split())
+    if len(collapsed) <= max_chars:
+        return collapsed
+    cut = collapsed[:max_chars]
+    # Back up to the last whitespace within the cut so we do not
+    # truncate mid-word — at most a few characters lost.
+    space = cut.rfind(" ")
+    if space > max_chars // 2:
+        cut = cut[:space]
+    return cut + " ..."
 
 
 def suggest_for_query(

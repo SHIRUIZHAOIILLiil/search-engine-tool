@@ -9,6 +9,35 @@ implementation steps these tags trace back to are summarised in the
 [Lecture alignment](README.md#lecture-alignment) and
 [Algorithms](README.md#algorithms) sections of the README.
 
+## [1.5.0] — 2026-05-11
+
+### Added
+- `parse_facets` and `filter_by_facets` in `src/search.py`. The
+  parser splits CLI args into a `{field: [value, ...]}` dict plus a
+  free-text remainder; the filter walks retrieval results and keeps
+  only documents whose per-field postings satisfy the predicate.
+- `find_pages_with_snippets` and `find_phrase_with_snippets` now
+  accept an optional `facets` parameter. When the free-text query
+  is empty but facets are non-empty, the result set is the
+  facet-filtered subset of every indexed document, ordered by
+  doc_id ascending, with a plain head-of-body preview as the
+  snippet (no highlights — nothing to anchor on).
+- `src/main.py` routes any CLI arg containing `=` to the facet
+  parser; args without `=` stay on the v1.4.0 free-text path.
+  Phrase detection looks at the free-text portion only so
+  `find "good friends" author=einstein` works end-to-end.
+- 36 tests across `tests/test_search.py` and `tests/test_main.py`:
+  parser correctness, AND-across-field / OR-within-field /
+  AND-within-value semantics, facet-only browse, phrase+facet
+  combination, brief-compatibility regression (`find good friends`
+  unchanged), and error messages for unknown field / empty value.
+
+### Changed
+- CLI help text documents the `field=value` and quoted-phrase forms.
+- Brief-compatibility invariant pinned by test: a query with zero
+  `=` characters routes through identically to v1.4.0; the facet
+  pass is a strict superset, never a replacement.
+
 ## [1.4.0] — 2026-05-11
 
 ### Added
@@ -320,6 +349,7 @@ shell with the four required `build` / `load` / `print` / `find`
 commands, a single-file JSON-persisted inverted index, and the first
 round of unit tests covering the indexer and search modules.
 
+[1.5.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.5.0
 [1.4.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.4.0
 [1.3.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.3.0
 [1.2.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.2.0

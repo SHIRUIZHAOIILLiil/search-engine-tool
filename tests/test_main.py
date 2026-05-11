@@ -136,6 +136,169 @@ class MainCommandTests(unittest.TestCase):
         self.assertIn("[good friends]", text)
         self.assertNotIn("[good] [friends]", text)
 
+
+class FindCommandFacetSyntaxTests(unittest.TestCase):
+    """v1.5.0: ``field=value`` facets layered onto the brief's find.
+
+    The class is kept separate from ``MainCommandTests`` so the
+    facet-specific fixture (which needs populated ``fields`` per
+    posting) does not bloat the older test fixtures.
+    """
+
+    def setUp(self):
+        # Two docs with author + tag facets populated. Doc 0 is
+        # Einstein on science; doc 1 is Wilde on wit.
+        self.index = Index(
+            documents={
+                0: "https://example.com/einstein/",
+                1: "https://example.com/wilde/",
+            },
+            documents_text={
+                0: "imagination is more important than knowledge",
+                1: "always forgive your enemies; nothing annoys them so much",
+            },
+            postings={
+                "knowledge": {0: {
+                    "frequency": 1, "positions": [5], "fields": {},
+                }},
+                "always": {1: {
+                    "frequency": 1, "positions": [0], "fields": {},
+                }},
+                "einstein": {0: {
+                    "frequency": 0, "positions": [], "fields": {
+                        "author": {"frequency": 1, "positions": [0]},
+                    },
+                }},
+                "wilde": {1: {
+                    "frequency": 0, "positions": [], "fields": {
+                        "author": {"frequency": 1, "positions": [1]},
+                    },
+                }},
+                "science": {0: {
+                    "frequency": 0, "positions": [], "fields": {
+                        "tag": {"frequency": 1, "positions": [0]},
+                    },
+                }},
+                "wit": {1: {
+                    "frequency": 0, "positions": [], "fields": {
+                        "tag": {"frequency": 1, "positions": [0]},
+                    },
+                }},
+            },
+        )
+
+    def test_find_with_facet_and_free_text_filters_intersection(self):
+        # ``knowledge`` body match for doc 0 + author=einstein keeps doc 0.
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find author=einstein knowledge", self.index)
+
+        text = output.getvalue()
+        self.assertIn("https://example.com/einstein/", text)
+        self.assertNotIn("https://example.com/wilde/", text)
+        self.assertIn("[knowledge]", text)
+
+    def test_find_with_facet_filtering_out_free_text_match(self):
+        # ``knowledge`` matches doc 0 but author=wilde excludes it.
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find author=wilde knowledge", self.index)
+
+        self.assertIn("No matching pages found.", output.getvalue())
+
+    def test_find_with_facet_only_browses_matching_docs(self):
+        # No free text → facet-only browse. Snippet is the head-of-body
+        # preview, no [brackets].
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find tag=science", self.index)
+
+        text = output.getvalue()
+        self.assertIn("https://example.com/einstein/", text)
+        self.assertNotIn("https://example.com/wilde/", text)
+        # Preview is plain text, not bracketed.
+        self.assertNotIn("[", text)
+
+    def test_find_phrase_plus_facet_intersects(self):
+        # Build a phrase-friendly index with a facet.
+        index = Index(
+            documents={0: "https://example.com/page-1/"},
+            documents_text={0: "We are all good friends here together."},
+            postings={
+                "good": {0: {"frequency": 1, "positions": [3], "fields": {}}},
+                "friends": {0: {"frequency": 1, "positions": [4], "fields": {}}},
+                "einstein": {0: {"frequency": 0, "positions": [], "fields": {
+                    "author": {"frequency": 1, "positions": [0]},
+                }}},
+            },
+            doc_lengths={0: 8},
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command('find author=einstein "good friends"', index)
+
+        text = output.getvalue()
+        self.assertIn("https://example.com/page-1/", text)
+        # Phrase highlighting still kicks in: the whole phrase
+        # bracketed as one unit, not each token independently.
+        self.assertIn("[good friends]", text)
+        self.assertNotIn("[good] [friends]", text)
+
+    def test_find_with_unknown_facet_field_raises_value_error(self):
+        # ``athor=einstein`` is a typo — the parser must refuse it
+        # so the user sees an immediate error rather than a silently
+        # empty result list. The error surfaces with a list of known
+        # fields to help the user fix it.
+        with self.assertRaises(ValueError) as ctx:
+            handle_command("find athor=einstein knowledge", self.index)
+
+        msg = str(ctx.exception)
+        self.assertIn("Unknown facet field", msg)
+        self.assertIn("athor", msg)
+        self.assertIn("author", msg)
+
+    def test_find_with_empty_facet_value_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            handle_command("find author= knowledge", self.index)
+
+        self.assertIn("Empty facet value", str(ctx.exception))
+
+    def test_find_without_equals_preserves_brief_conjunctive_path(self):
+        # The brief compatibility checkpoint. ``find good friends``
+        # routes through the conjunctive path identically to v1.4.0
+        # — no facet parsing should disturb the result.
+        index = Index(
+            documents={0: "page-1"},
+            documents_text={0: "good friends are like stars"},
+            postings={
+                "good": {0: {"frequency": 1, "positions": [0]}},
+                "friends": {0: {"frequency": 1, "positions": [1]}},
+            },
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find good friends", index)
+
+        text = output.getvalue()
+        self.assertIn("page-1", text)
+        self.assertIn("[good]", text)
+        self.assertIn("[friends]", text)
+
+    def test_help_documents_field_equals_value_syntax(self):
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("help", self.index)
+
+        help_text = output.getvalue()
+        self.assertIn("field=value", help_text)
+        self.assertIn("author", help_text)
+
     def test_find_command_routes_quoted_argument_to_phrase_mode(self):
         # v1.4.0: main.py imports the ``_with_snippets`` variants so it
         # can print URL + context excerpt per result; patches follow.
