@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.indexer import Index
+from src.indexer import FIELD_NAMES, Index
 from src.ranker import Ranker, TFIDFRanker
 from src.retrieval import conjunctive_retrieval, phrase_retrieval
 from src.snippet import extract_snippet
@@ -97,6 +97,79 @@ def find_phrase(
 
     results = phrase_retrieval(index, tokens, ranker)
     return [index.documents[doc_id] for doc_id, _ in results]
+
+
+def parse_facets(
+    args: list[str],
+    valid_fields: tuple[str, ...] = FIELD_NAMES,
+) -> tuple[dict[str, list[str]], str]:
+    """Split CLI args into structural facet filters and free-text tokens.
+
+    A facet has the shape ``field=value`` (e.g. ``author=einstein``).
+    Args without an ``=`` are free-text tokens and join into the
+    query body that ``find_pages`` / ``find_phrase`` consume — this
+    is what preserves the brief's plain ``find good friends`` form:
+    a query that contains zero ``=`` characters routes through
+    exactly the same path it did before v1.5.0.
+
+    Multiple values for the same field (e.g. ``tag=science tag=physics``)
+    are *disjunctive* (OR) — matching the conventional facet UI
+    behaviour where ticking two tags under one heading widens the
+    result set. Across different fields, facets are conjunctive (AND);
+    that combination is enforced by the caller, not this parser.
+
+    Args:
+        args: Tokens already produced by ``shlex.split`` of the CLI
+            input. Quoted values like ``author="oscar wilde"`` arrive
+            as a single argument here — shlex strips the quotes.
+        valid_fields: Allowed left-hand sides of ``=``. Defaults to
+            :data:`src.indexer.FIELD_NAMES`. Anything else raises so
+            the user sees ``Unknown facet field: foo`` rather than
+            having their typo silently match zero documents.
+
+    Returns:
+        ``({field: [value, ...]}, free_text)`` where ``free_text`` is
+        the space-joined non-facet args (an empty string if every
+        arg was a facet — facet-only queries are valid).
+
+    Raises:
+        ValueError: if a facet uses an unknown field, has an empty
+            value (``author=``), or has an empty field (``=value``).
+    """
+    facets: dict[str, list[str]] = {}
+    free_tokens: list[str] = []
+    valid_set = set(valid_fields)
+
+    for arg in args:
+        if "=" not in arg:
+            free_tokens.append(arg)
+            continue
+
+        field, _, value = arg.partition("=")
+        # Normalise the field name to the canonical lowercase form
+        # so that ``Author=Einstein`` works the same as ``author=einstein``.
+        # Values are *not* normalised here; the retrieval layer
+        # applies the tokeniser when comparing them against postings,
+        # which handles case-folding consistently with the index.
+        field = field.lower()
+
+        if not field:
+            raise ValueError(
+                f"Empty facet field in '{arg}' — write field=value"
+            )
+        if field not in valid_set:
+            raise ValueError(
+                f"Unknown facet field: {field!r}. "
+                f"Known fields: {', '.join(sorted(valid_set))}"
+            )
+        if not value:
+            raise ValueError(
+                f"Empty facet value for {field!r} in '{arg}'"
+            )
+
+        facets.setdefault(field, []).append(value)
+
+    return facets, " ".join(free_tokens)
 
 
 def find_pages_with_snippets(

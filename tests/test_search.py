@@ -9,6 +9,7 @@ from src.search import (
     find_phrase,
     find_phrase_with_snippets,
     format_did_you_mean,
+    parse_facets,
     print_word,
     suggest_for_query,
 )
@@ -351,6 +352,103 @@ class FindPhraseWithSnippetsTests(unittest.TestCase):
         results = find_phrase_with_snippets(index, "good friends")
 
         self.assertEqual(results, [("page-1", "")])
+
+
+class ParseFacetsTests(unittest.TestCase):
+    """Parser for ``field=value`` facet syntax (v1.5.0).
+
+    Pins the brief-compatibility invariant: any args list that
+    contains no ``=`` characters must route through unchanged so
+    the existing ``find good friends`` semantics stay byte-identical.
+    """
+
+    def test_no_facets_returns_empty_dict_and_joined_free_text(self):
+        # The brief-compliant path: zero "=" anywhere → all args
+        # collapse to the free-text query body, no facets parsed.
+        facets, free_text = parse_facets(["good", "friends"])
+
+        self.assertEqual(facets, {})
+        self.assertEqual(free_text, "good friends")
+
+    def test_empty_args_returns_empty_facets_and_empty_text(self):
+        self.assertEqual(parse_facets([]), ({}, ""))
+
+    def test_single_facet_with_free_text(self):
+        facets, free_text = parse_facets(["author=einstein", "wisdom"])
+
+        self.assertEqual(facets, {"author": ["einstein"]})
+        self.assertEqual(free_text, "wisdom")
+
+    def test_facet_value_with_internal_space_via_shlex_handling(self):
+        # ``shlex.split('find author="oscar wilde" wisdom')`` produces
+        # ``["find", "author=oscar wilde", "wisdom"]`` — a single arg
+        # with a space inside the value half. The parser must keep
+        # the whole value intact, not split on the space.
+        facets, free_text = parse_facets(["author=oscar wilde", "wisdom"])
+
+        self.assertEqual(facets, {"author": ["oscar wilde"]})
+        self.assertEqual(free_text, "wisdom")
+
+    def test_multiple_facets_different_fields_aggregate(self):
+        facets, _ = parse_facets(["author=einstein", "tag=science"])
+
+        self.assertEqual(facets, {"author": ["einstein"], "tag": ["science"]})
+
+    def test_multiple_values_same_field_aggregate_into_list_for_or_semantics(self):
+        # Disjunctive multi-value on one field — matches conventional
+        # facet UI behaviour ("tick both Science and Physics").
+        facets, _ = parse_facets(["tag=science", "tag=physics"])
+
+        self.assertEqual(facets, {"tag": ["science", "physics"]})
+
+    def test_facet_only_query_returns_empty_free_text(self):
+        # ``find author=einstein`` with no free-text words is valid —
+        # browse all Einstein quotes.
+        facets, free_text = parse_facets(["author=einstein"])
+
+        self.assertEqual(facets, {"author": ["einstein"]})
+        self.assertEqual(free_text, "")
+
+    def test_facet_field_name_is_case_normalised(self):
+        # ``Author=Einstein`` works the same as ``author=einstein``
+        # so the user does not have to remember internal capitalisation.
+        facets, _ = parse_facets(["Author=Einstein", "AUTHOR=newton"])
+
+        self.assertEqual(facets, {"author": ["Einstein", "newton"]})
+
+    def test_unknown_field_raises_value_error_listing_known_fields(self):
+        # Typo detection. The error message must list what is allowed
+        # so the user can correct without consulting the docs.
+        with self.assertRaises(ValueError) as ctx:
+            parse_facets(["athor=einstein", "wisdom"])
+
+        msg = str(ctx.exception)
+        self.assertIn("Unknown facet field", msg)
+        self.assertIn("athor", msg)
+        self.assertIn("author", msg)
+
+    def test_empty_field_raises_value_error(self):
+        # ``=einstein`` has nothing before the ``=`` — clear typo.
+        with self.assertRaises(ValueError) as ctx:
+            parse_facets(["=einstein"])
+
+        self.assertIn("Empty facet field", str(ctx.exception))
+
+    def test_empty_value_raises_value_error(self):
+        # ``author=`` is an empty filter; refusing to interpret it
+        # prevents a "matches everything" surprise.
+        with self.assertRaises(ValueError) as ctx:
+            parse_facets(["author=", "wisdom"])
+
+        self.assertIn("Empty facet value", str(ctx.exception))
+
+    def test_equals_in_free_text_word_is_caught_as_facet(self):
+        # If a user inputs a token with an unintended ``=``, the
+        # parser treats it as a facet attempt — which then fails the
+        # field-name check with a clear error. Better than silently
+        # routing odd input through the free-text path.
+        with self.assertRaises(ValueError):
+            parse_facets(["x=y"])
 
 
 class SuggestForQueryTests(unittest.TestCase):
