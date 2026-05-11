@@ -14,6 +14,7 @@ from src.search import (
     find_pages_with_snippets,
     find_phrase_with_snippets,
     format_did_you_mean,
+    parse_facets,
     print_word,
 )
 
@@ -112,17 +113,28 @@ def handle_command(raw_command: str, index: Index) -> Index:
         return index
     if command == "find":
         if not args:
-            raise ValueError("Usage: find <word or phrase>")
-        # A single shlex-arg containing a space comes from a quoted
-        # input like `find "good friends"` — route to strict phrase
-        # matching. Every other shape (one bareword, multiple words)
-        # stays on the conjunctive AND path the brief specifies.
-        if len(args) == 1 and " " in args[0]:
-            query_text = args[0]
-            results = find_phrase_with_snippets(index, query_text)
+            raise ValueError(
+                "Usage: find <word or phrase> [field=value ...]"
+            )
+        # v1.5.0: any arg containing ``=`` becomes a facet filter
+        # (``author=einstein``). Args without ``=`` are free-text
+        # tokens for the conjunctive / phrase path — preserving the
+        # brief's ``find good friends`` semantics byte-for-byte when
+        # no facet is present. parse_facets raises ValueError on
+        # unknown fields or empty values; that propagates to the
+        # shell loop which prints it as "Error: ...".
+        facets, _ = parse_facets(args)
+        free_args = [arg for arg in args if "=" not in arg]
+
+        # Phrase routing looks at the *free-text* portion only — a
+        # quoted "good friends" can still combine with facet filters
+        # like ``find "good friends" author=einstein``.
+        if len(free_args) == 1 and " " in free_args[0]:
+            query_text = free_args[0]
+            results = find_phrase_with_snippets(index, query_text, facets=facets)
         else:
-            query_text = " ".join(args)
-            results = find_pages_with_snippets(index, query_text)
+            query_text = " ".join(free_args)
+            results = find_pages_with_snippets(index, query_text, facets=facets)
         if results:
             # Per result: URL on its own line, then the snippet
             # indented two spaces so the eye groups (URL, context)
@@ -136,14 +148,15 @@ def handle_command(raw_command: str, index: Index) -> Index:
                     print(f"  {snippet}")
         else:
             print("No matching pages found.")
-            # Offer a spelling-correction hint only when the query
-            # contains at least one token the index does not know
-            # AND a near-neighbour exists. Both checks live inside
-            # format_did_you_mean; None means "nothing useful to
-            # say, stay silent".
-            hint = format_did_you_mean(index, query_text)
-            if hint is not None:
-                print(hint)
+            # Spelling-correction hint only fires when there *is* a
+            # free-text query that came back empty. A facet-only
+            # browse that returns nothing is a "no matches" rather
+            # than a typo, so suppressing the hint there avoids
+            # nonsensical "Did you mean: author=einstein?" output.
+            if query_text:
+                hint = format_did_you_mean(index, query_text)
+                if hint is not None:
+                    print(hint)
         return index
 
     raise ValueError(f"Unknown command: {command}")
@@ -155,6 +168,9 @@ def print_help() -> None:
     print("  load               Load the saved index")
     print("  print <word>       Print the inverted index for a word")
     print("  find <query>       Find pages containing all query words")
+    print('                     "..." for phrase queries (e.g. find "good friends")')
+    print("                     field=value to filter by field (author, tag, title,")
+    print("                     quote_text); e.g. find author=einstein wisdom")
     print("  exit               Quit")
 
 
