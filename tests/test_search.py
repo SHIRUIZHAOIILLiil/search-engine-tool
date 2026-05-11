@@ -3,7 +3,13 @@ import unittest
 from src.crawler import CrawledPage
 from src.indexer import Index, build_index
 from src.ranker import TFIDFRanker
-from src.search import find_pages, find_phrase, print_word
+from src.search import (
+    find_pages,
+    find_phrase,
+    format_did_you_mean,
+    print_word,
+    suggest_for_query,
+)
 from src.tokenizer import TokenizerConfig
 
 
@@ -222,6 +228,96 @@ class FindPhraseTests(unittest.TestCase):
         )
 
         self.assertEqual(find_phrase(index, "alpha beta"), ["page-A", "page-B"])
+
+
+class SuggestForQueryTests(unittest.TestCase):
+    def setUp(self):
+        # A tiny vocabulary that gives us deliberate near-misses for
+        # canonical typos: indi*erence / friend* / good*.
+        self.index = Index(
+            documents={0: "page-1"},
+            postings={
+                "indifference": {0: {"frequency": 1, "positions": [0]}},
+                "indignant": {0: {"frequency": 1, "positions": [1]}},
+                "friend": {0: {"frequency": 1, "positions": [2]}},
+                "friendly": {0: {"frequency": 1, "positions": [3]}},
+                "good": {0: {"frequency": 1, "positions": [4]}},
+                "goodness": {0: {"frequency": 1, "positions": [5]}},
+            },
+        )
+
+    def test_returns_empty_when_every_token_in_vocabulary(self):
+        # Known query is not a typo candidate — keeps "did you mean"
+        # noise out of legitimate find calls that simply return zero
+        # pages because of the AND filter.
+        self.assertEqual(suggest_for_query(self.index, "good friend"), {})
+
+    def test_returns_candidates_for_unknown_token(self):
+        result = suggest_for_query(self.index, "indiference")
+        self.assertIn("indiference", result)
+        self.assertIn("indifference", result["indiference"])
+
+    def test_applies_index_tokenizer_config_for_case_insensitivity(self):
+        # Tokeniser lowercases by default; suggestion should follow
+        # the same path so a typo with uppercase chars still resolves.
+        result = suggest_for_query(self.index, "Indiference")
+        self.assertIn("indiference", result)
+        self.assertIn("indifference", result["indiference"])
+
+    def test_empty_query_returns_empty_mapping(self):
+        self.assertEqual(suggest_for_query(self.index, ""), {})
+
+    def test_no_candidate_within_threshold_returns_empty_list(self):
+        # "xyzqq" has nothing within edit distance 2 of any vocab term.
+        result = suggest_for_query(self.index, "xyzqq")
+        self.assertEqual(result, {"xyzqq": []})
+
+
+class FormatDidYouMeanTests(unittest.TestCase):
+    def setUp(self):
+        self.index = Index(
+            documents={0: "page-1"},
+            postings={
+                "indifference": {0: {"frequency": 1, "positions": [0]}},
+                "friend": {0: {"frequency": 1, "positions": [1]}},
+                "good": {0: {"frequency": 1, "positions": [2]}},
+            },
+        )
+
+    def test_returns_none_when_every_token_in_vocab(self):
+        # Zero results when query is valid is an AND-filter miss, not
+        # a typo — a "did you mean" hint would mislead the user.
+        self.assertIsNone(format_did_you_mean(self.index, "good friend"))
+
+    def test_returns_none_for_empty_query(self):
+        self.assertIsNone(format_did_you_mean(self.index, ""))
+
+    def test_returns_reformulated_single_token_query(self):
+        hint = format_did_you_mean(self.index, "indiference")
+        self.assertEqual(hint, "Did you mean: indifference?")
+
+    def test_returns_reformulated_multi_token_query_preserving_order(self):
+        # Order matters — the reformulation must read in the original
+        # word order so the user can copy-paste it back into find.
+        hint = format_did_you_mean(self.index, "indiference godo")
+        self.assertEqual(hint, "Did you mean: indifference good?")
+
+    def test_keeps_known_tokens_verbatim_in_reformulation(self):
+        hint = format_did_you_mean(self.index, "good indiference")
+        # "good" is in vocab, passes through; "indiference" is corrected.
+        self.assertEqual(hint, "Did you mean: good indifference?")
+
+    def test_returns_none_when_no_unknown_token_has_a_candidate(self):
+        # "xyzqq" is unknown but has nothing within edit distance 2
+        # — nothing useful to suggest, stay silent.
+        self.assertIsNone(format_did_you_mean(self.index, "xyzqq"))
+
+    def test_keeps_uncorrectable_token_alongside_correctable_one(self):
+        # If at least one token has a candidate, surface the line —
+        # uncorrectable tokens pass through so the user still sees
+        # every word they typed in the reformulation.
+        hint = format_did_you_mean(self.index, "indiference xyzqq")
+        self.assertEqual(hint, "Did you mean: indifference xyzqq?")
 
 
 if __name__ == "__main__":

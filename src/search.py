@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.indexer import Index
 from src.ranker import Ranker, TFIDFRanker
 from src.retrieval import conjunctive_retrieval, phrase_retrieval
+from src.suggest import suggest_corrections
 from src.tokenizer import tokenize
 
 
@@ -95,3 +96,77 @@ def find_phrase(
 
     results = phrase_retrieval(index, tokens, ranker)
     return [index.documents[doc_id] for doc_id, _ in results]
+
+
+def suggest_for_query(
+    index: Index,
+    query: str,
+    *,
+    max_distance: int = 2,
+    max_suggestions: int = 3,
+) -> dict[str, list[str]]:
+    """Return spelling suggestions for unknown tokens in ``query``.
+
+    Tokenises ``query`` under :attr:`Index.tokenizer_config` (so the
+    same lowercasing / stopword / stemming that shaped the index also
+    shapes the suggestion check) and looks up each token in the
+    index's posting-list vocabulary. Tokens already in the vocabulary
+    are omitted from the returned mapping — they are not typo
+    candidates and surfacing synonyms would clutter the CLI.
+
+    Returns:
+        Mapping ``{unknown_token: [candidate_1, ...]}`` sorted by
+        edit distance ascending. The mapping is empty when every
+        query token is already in the vocabulary; an unknown token
+        with no candidate within ``max_distance`` is included with
+        an empty list (caller distinguishes "fine" from "no help").
+    """
+    tokens = tokenize(query, index.tokenizer_config)
+    if not tokens:
+        return {}
+    return suggest_corrections(
+        tokens,
+        index.postings.keys(),
+        max_distance=max_distance,
+        max_suggestions=max_suggestions,
+    )
+
+
+def format_did_you_mean(
+    index: Index,
+    query: str,
+) -> str | None:
+    """Return a CLI-ready ``"Did you mean: ...?"`` hint, or ``None``.
+
+    Hints are query reformulations rather than per-token candidate
+    lists — the user can copy-paste the suggested line directly into
+    a new ``find`` invocation. Unknown tokens are replaced by their
+    top candidate (lowest edit distance, alpha-sorted on ties);
+    known tokens pass through verbatim so the reformulation reads
+    naturally.
+
+    Returns ``None`` — i.e. the CLI prints nothing — when:
+
+    * the query is empty after tokenisation, or
+    * every token is already in the vocabulary (the zero-result case
+      is then a strict-AND fail, not a typo, and a "Did you mean"
+      hint would mislead), or
+    * at least one token is unknown but *no* unknown token has any
+      candidate within the distance threshold (nothing useful to say).
+    """
+    suggestions = suggest_for_query(index, query)
+    if not any(candidates for candidates in suggestions.values()):
+        return None
+
+    tokens = tokenize(query, index.tokenizer_config)
+    reformulated: list[str] = []
+    for tok in tokens:
+        candidates = suggestions.get(tok)
+        if candidates:
+            reformulated.append(candidates[0])
+        else:
+            # Either a known token (passthrough) or an unknown one
+            # with no candidate (keep the user's spelling so the
+            # hint still surfaces every word they typed).
+            reformulated.append(tok)
+    return f"Did you mean: {' '.join(reformulated)}?"
