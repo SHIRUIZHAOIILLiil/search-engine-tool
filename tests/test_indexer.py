@@ -226,6 +226,83 @@ class IndexerTests(unittest.TestCase):
 
         self.assertEqual(loaded_index, index)
 
+    def test_build_index_persists_body_text_for_each_document(self):
+        # New in v1.4.0 (INDEX_VERSION 5): the snippet generator needs
+        # the raw body text per doc, so build_index now mirrors
+        # ``CrawledPage.text`` into ``Index.documents_text`` keyed by
+        # the same int doc_id used in ``documents`` and ``postings``.
+        pages = [
+            CrawledPage(url="page-1", text="good friends are stars"),
+            CrawledPage(url="page-2", text="good morning sunshine"),
+        ]
+
+        index = build_index(pages)
+
+        self.assertEqual(index.documents_text[0], "good friends are stars")
+        self.assertEqual(index.documents_text[1], "good morning sunshine")
+        # Same key space as ``documents`` — invariant the snippet
+        # generator relies on (doc_id from postings -> URL -> text
+        # all roundtrip through the same int).
+        self.assertEqual(set(index.documents_text.keys()), set(index.documents.keys()))
+
+    def test_build_index_overwrites_body_text_when_same_url_seen_twice(self):
+        # Duplicate URL collapses to one doc_id (per the existing
+        # contract); the later body text wins so the snippet reflects
+        # the most recent crawl content.
+        pages = [
+            CrawledPage(url="page-1", text="first crawl content"),
+            CrawledPage(url="page-1", text="updated crawl content"),
+        ]
+
+        index = build_index(pages)
+
+        self.assertEqual(len(index.documents_text), 1)
+        self.assertEqual(index.documents_text[0], "updated crawl content")
+
+    def test_save_and_load_round_trip_preserves_documents_text(self):
+        # The body text must survive the JSON roundtrip — otherwise
+        # ``load`` followed by snippet generation would silently
+        # produce empty snippets without anyone noticing.
+        index = Index(
+            documents={0: "page-1", 1: "page-2"},
+            documents_text={
+                0: "good friends are stars",
+                1: "good morning sunshine",
+            },
+            postings={
+                "good": {
+                    0: {"frequency": 1, "positions": [0]},
+                    1: {"frequency": 1, "positions": [0]},
+                },
+            },
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = f"{temporary_directory}/index.json"
+            save_index(index, path)
+            loaded = load_index(path)
+
+        self.assertEqual(loaded.documents_text, index.documents_text)
+
+    def test_save_index_serialises_documents_text_with_stringified_doc_ids(self):
+        # JSON requires string keys; document_text in particular must
+        # stay parallel to ``documents`` in stringification so a future
+        # external consumer (e.g. a debugging script) can join the two.
+        index = Index(
+            documents={0: "page-1"},
+            documents_text={0: "alpha beta"},
+            postings={"alpha": {0: {"frequency": 1, "positions": [0]}}},
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = f"{temporary_directory}/index.json"
+            save_index(index, path)
+            with open(path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+
+        self.assertIn("documents_text", payload)
+        self.assertEqual(payload["documents_text"], {"0": "alpha beta"})
+
     def test_save_index_writes_schema_version_to_disk(self):
         index = Index(
             documents={0: "page-1"},

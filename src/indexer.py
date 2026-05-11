@@ -12,7 +12,7 @@ from src.crawler import CrawledPage
 from src.parser import ParsedFields
 from src.tokenizer import TokenizerConfig, tokenize
 
-INDEX_VERSION = 4
+INDEX_VERSION = 5
 
 # Names of the structured fields recorded in each posting's ``fields`` map.
 # The catch-all ``body`` field is *not* listed here because it is already
@@ -33,6 +33,12 @@ class Index:
     two-table layout for production-grade inverted indices:
 
     * ``documents`` maps each integer doc_id to its source URL.
+    * ``documents_text`` maps each integer doc_id to its raw body text.
+      Stored on the index so the snippet generator (Lecture 13 result
+      presentation; Manning et al. Ch. 8.7) can quote ~60-80 chars of
+      context around the matched token without re-fetching the page.
+      Adds ~3-5x to the on-disk file size but keeps `find` self-
+      contained — every query can produce snippets without network.
     * ``postings`` maps each term to a doc_id-keyed posting list.
     * ``doc_lengths`` records each document's token count, needed by
       length-normalising rankers like BM25 (Croft, Metzler & Strohman,
@@ -60,6 +66,7 @@ class Index:
 
     version: int = INDEX_VERSION
     documents: dict[int, str] = field(default_factory=dict)
+    documents_text: dict[int, str] = field(default_factory=dict)
     postings: PostingsByDocId = field(default_factory=dict)
     doc_lengths: dict[int, int] = field(default_factory=dict)
     tokenizer_config: TokenizerConfig = field(default_factory=TokenizerConfig)
@@ -97,6 +104,13 @@ def build_index(
             doc_id = len(index.documents)
             index.documents[doc_id] = page.url
             url_to_doc_id[page.url] = doc_id
+
+        # Persist the raw body text so the snippet generator can
+        # quote context at query time without re-fetching the page.
+        # If the same URL appears more than once in the input, the
+        # latest content wins — this matches the per-URL doc-id reuse
+        # behaviour just above.
+        index.documents_text[doc_id] = page.text
 
         # Body pass: feeds the top-level statistics that the brief's
         # print/find commands rely on, and tallies the body token count
@@ -191,6 +205,9 @@ def save_index(index: Index, path: str | Path = "data/index.json") -> None:
         # here and converted back on load. This stays internal to the
         # serialiser; in-memory keys are always integers.
         "documents": {str(doc_id): url for doc_id, url in index.documents.items()},
+        "documents_text": {
+            str(doc_id): text for doc_id, text in index.documents_text.items()
+        },
         "postings": {
             term: {str(doc_id): posting for doc_id, posting in postings.items()}
             for term, postings in index.postings.items()
@@ -229,6 +246,10 @@ def load_index(path: str | Path = "data/index.json") -> Index:
     documents = {
         int(doc_id): url for doc_id, url in payload.get("documents", {}).items()
     }
+    documents_text = {
+        int(doc_id): text
+        for doc_id, text in payload.get("documents_text", {}).items()
+    }
     postings = {
         term: {int(doc_id): posting for doc_id, posting in posting_map.items()}
         for term, posting_map in payload.get("postings", {}).items()
@@ -244,6 +265,7 @@ def load_index(path: str | Path = "data/index.json") -> Index:
     return Index(
         version=payload["version"],
         documents=documents,
+        documents_text=documents_text,
         postings=postings,
         doc_lengths=doc_lengths,
         tokenizer_config=tokenizer_config,

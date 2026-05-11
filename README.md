@@ -25,9 +25,13 @@ The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), 
 - **Phrase queries** via the position-offset intersection trick — `find "good friends"` requires the tokens to appear adjacent and in order.
 - **Opt-in text normalisation** — `TokenizerConfig` enables a ~25-word English stopword filter and Porter Step 1 stemming; default is off to preserve brief-compliant semantics.
 - **Query suggestions ("Did you mean...?")** — when `find` returns zero results and at least one query token is missing from the index vocabulary, the CLI offers a reformulated query using Levenshtein-distance lookups (Manning et al., Ch. 3).
+- **Highlighted snippets** — each `find` result now prints a 60-80 character body excerpt with the matching tokens wrapped in `[brackets]` (Manning et al., Ch. 8.7 "Summarization and snippet generation"). Phrase queries highlight the whole phrase as one unit.
+- **Atomic index persistence** — `save_index` writes via a sibling `.tmp` file and `os.replace`, so a crash during `build` leaves the previous good `index.json` untouched.
+- **Connection-pooled crawler** — one `requests.Session` per crawler with a urllib3 retry adapter (`total=3`, exponential backoff, `502/503/504` only) keeps a single transient network blip from aborting a whole crawl.
 - **Schema version guard** — `load` refuses to read indexes written by an incompatible version.
 - **UTF-8 CLI output** — `run_shell` reconfigures stdout so smart quotes and other Unicode characters in scraped quotes render correctly on Windows terminals.
-- **261 tests at 92.5 % coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
+- **Three CI gates** — ruff lint, mypy type check, and the test suite all run on every push/PR; coverage must stay above 85 %.
+- **302 tests at 93 %+ coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
 
 ---
 
@@ -169,12 +173,26 @@ At the `>` prompt:
 > load
 > print nonsense
 > find indifference
+https://quotes.toscrape.com/page/12/
+  ... it is our [indifference] that hurts ...
+
 > find good friends
+https://quotes.toscrape.com/page/1/
+  ... [Good] [friends] are like stars - you don't always see them ...
+
 > find "good friends"
+https://quotes.toscrape.com/page/1/
+  ... we are all [good friends] here, sharing the journey ...
+
 > find indiference
 No matching pages found.
 Did you mean: indifference?
 ```
+
+Each `find` result is followed by a context snippet on the next line,
+indented two spaces and with the matched terms wrapped in
+`[brackets]`. Quoted phrase queries highlight the whole phrase as one
+unit; conjunctive queries bracket each token independently.
 
 ---
 
@@ -350,6 +368,50 @@ runs a linear scan over the vocabulary at query time. A BK-tree
 index would cut this to *O(log N)* — that optimisation is queued for
 v1.6.0 and will slot under the same public API.
 
+### Snippet generation (Manning et al. Ch. 8.7)
+
+For each result `find` returns, the CLI prints a ~70-character body
+excerpt anchored on the earliest query-term match, with every
+occurrence of any query token wrapped in `[brackets]`:
+
+```
+https://quotes.toscrape.com/page/3/
+  ... we are all [good friends] here, sharing the day ...
+```
+
+The snippet generator follows the **static** snippet strategy from
+Manning, Raghavan & Schutze's *Introduction to Information Retrieval*
+Ch. 8.7: quote a fixed window around the first match, mark
+truncation with ellipses, highlight the matched terms. The
+alternative *dynamic* strategy (selecting sentences ranked by
+query-term density) is out of scope here.
+
+Implementation in [`src/snippet.py`](src/snippet.py):
+
+1. A case-insensitive `\b<token>\b` regex finds the earliest match in
+   the raw body text stored on the index (`Index.documents_text`,
+   added at `INDEX_VERSION` 5). The word-boundary anchors prevent
+   spurious `good`-inside-`goodness` matches.
+2. The window expands ±35 characters around the anchor, with a 20-char
+   slack for snapping to whitespace so the snippet does not start or
+   end mid-word. Internal whitespace is collapsed to single spaces so
+   multi-line bodies still produce a one-line excerpt.
+3. Inside the window, every occurrence of any query token (or the
+   whole phrase in phrase-mode queries) is wrapped in `[brackets]`.
+   Original case is preserved (`[Good]`, not `[good]`).
+4. `...` prefix/suffix is added when the window does not reach the
+   body start/end, signalling truncation.
+
+The bracket markup (rather than ANSI colour codes) is deliberate —
+it asserts cleanly in tests, renders identically on every terminal,
+and copies into video screen recordings without escape-code noise.
+
+**Known limitation**: when the index was built with stemming enabled,
+a query token like `run` will not surface a snippet on a document
+whose body contains only `running` — the raw-text substring lookup
+sees `run` as not present. Default configuration has stemming off, so
+this is unobservable on the brief's primary workflow.
+
 ---
 
 ## Benchmarks
@@ -485,7 +547,7 @@ for the implementation.
 python -m unittest discover
 ```
 
-The test suite currently runs **261 tests** with no warnings and reaches **92.5 % line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
+The test suite currently runs **302 tests** with no warnings and reaches **93 %+ line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
 
 | File | Layer | Coverage |
 |---|---|---|
@@ -498,6 +560,7 @@ The test suite currently runs **261 tests** with no warnings and reaches **92.5 
 | [`tests/test_retrieval.py`](tests/test_retrieval.py) | Unit | DAAT / TAAT / conjunctive / skip-pointer / phrase algorithms |
 | [`tests/test_search.py`](tests/test_search.py) | Unit | `print_word`, `find_pages`, `find_phrase`, `suggest_for_query`, `format_did_you_mean` user-facing behaviour |
 | [`tests/test_suggest.py`](tests/test_suggest.py) | Unit | Wagner-Fischer Levenshtein distance and vocabulary-based candidate generation |
+| [`tests/test_snippet.py`](tests/test_snippet.py) | Unit | Window selection, word-boundary snap with slack bound, highlight markup, phrase mode |
 | [`tests/test_main.py`](tests/test_main.py) | Unit | CLI command handler, robots wiring, UTF-8 stdout |
 | [`tests/test_integration.py`](tests/test_integration.py) | Integration | Full pipeline: stub HTTP → crawl → build → save/load → find / phrase |
 | [`tests/test_performance.py`](tests/test_performance.py) | Performance | Regression budgets on 500-page synthetic corpus |
@@ -507,13 +570,20 @@ The test suite currently runs **261 tests** with no warnings and reaches **92.5 
 ### Continuous integration
 
 Every push to `main` and every pull request triggers
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml). The workflow:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). The workflow
+runs **three gates in order, fail-fast** on a Python 3.10 / 3.11 / 3.12
+matrix:
 
-* runs the full test suite under [`coverage.py`](https://coverage.readthedocs.io/) on a Python 3.10 / 3.11 / 3.12 matrix,
-* prints a per-module coverage report with missing-line numbers, and
-* **fails the build if total coverage drops below 85 %** (current: 92.5 %).
+1. **ruff lint** — `ruff check src/ tests/ benchmarks/` with the rule
+   set in `pyproject.toml` (pyflakes, pycodestyle, import sort, bugbear).
+2. **mypy type check** — moderate strictness configured in
+   `pyproject.toml`; catches mismatched type annotations on every push.
+3. **Test suite under coverage** — full unit / integration / property /
+   performance run, with a per-module report and a **fail-under-85 %
+   coverage gate** (current: 93 %+).
 
-A green CI badge above means the latest `main` commit passes all 261 tests on all three supported Python versions.
+A green CI badge above means the latest `main` commit clears all
+three gates on all three supported Python versions.
 
 ---
 

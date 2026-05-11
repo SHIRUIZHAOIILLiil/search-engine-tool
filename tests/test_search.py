@@ -5,7 +5,9 @@ from src.indexer import Index, build_index
 from src.ranker import TFIDFRanker
 from src.search import (
     find_pages,
+    find_pages_with_snippets,
     find_phrase,
+    find_phrase_with_snippets,
     format_did_you_mean,
     print_word,
     suggest_for_query,
@@ -228,6 +230,127 @@ class FindPhraseTests(unittest.TestCase):
         )
 
         self.assertEqual(find_phrase(index, "alpha beta"), ["page-A", "page-B"])
+
+
+class FindPagesWithSnippetsTests(unittest.TestCase):
+    """v1.4.0: ``find_pages`` now has a sibling that pairs each URL
+    with a context excerpt from the body. Preserves the original
+    ranking/match contract so existing `find_pages` tests still hold;
+    these new tests pin the snippet half of the pair.
+    """
+
+    def setUp(self):
+        self.index = Index(
+            documents={
+                0: "page-1",
+                1: "page-2",
+            },
+            documents_text={
+                0: "Good friends are like stars; you don't always see them.",
+                1: "Good morning, sunshine; the day is fresh and new.",
+            },
+            postings={
+                "good": {
+                    0: {"frequency": 1, "positions": [0]},
+                    1: {"frequency": 1, "positions": [0]},
+                },
+                "friends": {
+                    0: {"frequency": 1, "positions": [1]},
+                },
+            },
+        )
+
+    def test_returns_url_plus_snippet_pairs_for_each_match(self):
+        results = find_pages_with_snippets(self.index, "good friends")
+
+        self.assertEqual(len(results), 1)
+        url, snippet = results[0]
+        self.assertEqual(url, "page-1")
+        self.assertIn("[Good]", snippet)
+        self.assertIn("[friends]", snippet)
+
+    def test_url_order_matches_find_pages(self):
+        # Same retrieval contract -> same ordering. Locks the
+        # invariant that switching the CLI to the snippet variant
+        # cannot reshuffle the ranking under the user's feet.
+        plain = find_pages(self.index, "good")
+        snippet_urls = [url for url, _ in find_pages_with_snippets(self.index, "good")]
+
+        self.assertEqual(snippet_urls, plain)
+
+    def test_returns_empty_snippet_when_document_has_no_body_text(self):
+        # A v4 legacy index has documents_text empty by default; the
+        # find variant must still surface the URL — only the snippet
+        # half degrades. Pins backward compatibility.
+        legacy_index = Index(
+            documents={0: "page-legacy"},
+            documents_text={},  # explicitly empty -- pre-v1.4.0 shape
+            postings={"good": {0: {"frequency": 1, "positions": [0]}}},
+        )
+
+        results = find_pages_with_snippets(legacy_index, "good")
+
+        self.assertEqual(results, [("page-legacy", "")])
+
+    def test_empty_query_returns_empty_list(self):
+        self.assertEqual(find_pages_with_snippets(self.index, ""), [])
+
+    def test_no_matches_returns_empty_list(self):
+        self.assertEqual(find_pages_with_snippets(self.index, "nonexistent"), [])
+
+
+class FindPhraseWithSnippetsTests(unittest.TestCase):
+    def test_phrase_snippet_highlights_whole_phrase_as_one_unit(self):
+        index = Index(
+            documents={0: "page-1"},
+            documents_text={
+                0: "We are all good friends here, sharing the day.",
+            },
+            postings={
+                "good": {0: {"frequency": 1, "positions": [3]}},
+                "friends": {0: {"frequency": 1, "positions": [4]}},
+            },
+            doc_lengths={0: 10},
+        )
+
+        results = find_phrase_with_snippets(index, "good friends")
+
+        self.assertEqual(len(results), 1)
+        _, snippet = results[0]
+        # Phrase mode brackets the contiguous match, not each token.
+        self.assertIn("[good friends]", snippet)
+        self.assertNotIn("[good] [friends]", snippet)
+
+    def test_phrase_with_no_consecutive_match_returns_empty_list(self):
+        index = Index(
+            documents={0: "page-1"},
+            documents_text={
+                0: "Good ideas come from many friends, but not together.",
+            },
+            postings={
+                "good": {0: {"frequency": 1, "positions": [0]}},
+                "friends": {0: {"frequency": 1, "positions": [5]}},
+            },
+            doc_lengths={0: 10},
+        )
+
+        # The phrase filter rejects this; no result regardless of snippet.
+        self.assertEqual(find_phrase_with_snippets(index, "good friends"), [])
+
+    def test_phrase_snippet_with_empty_body_returns_url_and_empty_snippet(self):
+        index = Index(
+            documents={0: "page-1"},
+            documents_text={},
+            postings={
+                "good": {0: {"frequency": 1, "positions": [0]}},
+                "friends": {0: {"frequency": 1, "positions": [1]}},
+            },
+            doc_lengths={0: 2},
+        )
+
+        results = find_phrase_with_snippets(index, "good friends")
+
+        self.assertEqual(results, [("page-1", "")])
 
 
 class SuggestForQueryTests(unittest.TestCase):
