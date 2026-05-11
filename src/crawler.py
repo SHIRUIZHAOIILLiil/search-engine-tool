@@ -158,7 +158,16 @@ class QuoteCrawler:
         seen: set[str] = set()
         links: list[str] = []
         for anchor in soup.select("a[href]"):
-            href = (anchor.get("href") or "").strip()
+            # BeautifulSoup's ``Tag.get`` may return a multi-valued
+            # ``AttributeValueList`` for HTML attributes that allow
+            # space-separated values (``class``, ``rel``, …). Anchor
+            # ``href`` is single-valued in practice, but the static
+            # type union forces us to narrow before calling ``str``
+            # methods — narrowing also drops the ``None`` arm cleanly.
+            raw_href = anchor.get("href")
+            if not isinstance(raw_href, str):
+                continue
+            href = raw_href.strip()
             if not href:
                 continue
             absolute, _, _ = urljoin(base_url, href).partition("#")

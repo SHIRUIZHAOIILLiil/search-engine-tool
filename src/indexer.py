@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, cast
 
 from src.crawler import CrawledPage
 from src.parser import ParsedFields
@@ -109,7 +109,12 @@ def build_index(
                 doc_id,
                 _empty_posting(),
             )
-            posting["frequency"] = int(posting["frequency"]) + 1
+            # ``Posting`` is typed as ``dict[str, object]`` to fit
+            # both ``int`` frequencies and ``list[int]`` positions in
+            # one mapping; ``cast`` is the lightest-weight way to
+            # restore the int invariant for mypy without a wholesale
+            # ``TypedDict`` refactor (queued for v1.7.0).
+            posting["frequency"] = cast(int, posting["frequency"]) + 1
             positions = posting["positions"]
             if isinstance(positions, list):
                 positions.append(position)

@@ -35,6 +35,13 @@ jobs:
         # imports or unused names should not wait for the test suite.
         run: python -m ruff check src/ tests/ benchmarks/
 
+      - name: Type check with mypy
+        # Configuration lives in pyproject.toml [tool.mypy]; moderate
+        # strictness — check_untyped_defs / warn_redundant_casts /
+        # warn_unreachable — without --strict so the dict[str, object]
+        # posting representation stays untouched until v1.7.0.
+        run: python -m mypy
+
       - name: Run tests under coverage
         run: python -m coverage run -m unittest discover
 

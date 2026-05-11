@@ -130,5 +130,9 @@ warn_unreachable = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["bs4", "bs4.*"]
+# Third-party libraries we use through narrow APIs and that ship no
+# type stubs in mypy 2.x. The mypy team's `types-requests` stub
+# package occasionally lags behind requests releases, so opting out
+# here is simpler than pinning the stub version separately.
+module = ["bs4", "bs4.*", "requests", "requests.*"]
 ignore_missing_imports = true
