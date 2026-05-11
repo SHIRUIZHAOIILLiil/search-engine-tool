@@ -75,6 +75,48 @@ quotes.toscrape.com
 
 ---
 
+## Project structure
+
+```
+search-engine-tool/
+├── .github/
+│   └── workflows/
+│       └── ci.yml             # GitHub Actions: tests + coverage on push/PR
+├── data/
+│   └── index.json             # produced by `build` (gitignored)
+├── src/
+│   ├── crawler.py             # BFS crawler + politeness + robots gating
+│   ├── parser.py              # HTML → ParsedFields
+│   ├── robots.py              # robots.txt parsing
+│   ├── tokenizer.py           # tokenisation + stopwords + Porter stemming
+│   ├── indexer.py             # build_index / save_index / load_index
+│   ├── ranker.py              # Ranker protocol + TFIDFRanker + BM25Ranker
+│   ├── retrieval.py           # DAAT / TAAT / conjunctive / phrase
+│   ├── search.py              # print_word / find_pages / find_phrase
+│   └── main.py                # CLI entry point
+├── tests/
+│   ├── test_crawler.py
+│   ├── test_parser.py
+│   ├── test_robots.py
+│   ├── test_tokenizer.py
+│   ├── test_indexer.py
+│   ├── test_ranker.py
+│   ├── test_retrieval.py
+│   ├── test_search.py
+│   ├── test_main.py
+│   ├── test_integration.py    # full-pipeline tests
+│   ├── test_performance.py    # regression budgets
+│   └── test_properties.py     # randomised invariant tests
+├── .coveragerc                # coverage.py configuration
+├── .gitignore
+├── LICENSE                    # MIT
+├── README.md                  # this file
+├── requirements.txt           # runtime: requests + beautifulsoup4
+└── requirements-dev.txt       # runtime + coverage
+```
+
+---
+
 ## Setup
 
 ```bash
@@ -173,6 +215,98 @@ After `build`, `data/index.json` looks like:
 
 ---
 
+## Algorithms
+
+Formulas, complexity, and code location for each non-trivial algorithm.
+Implementations live in [`src/ranker.py`](src/ranker.py) and
+[`src/retrieval.py`](src/retrieval.py).
+
+### TF-IDF (vector-space scoring)
+
+```
+score(t, d) = tf(t, d) · log(N / df(t))
+score(q, d) = Σ_{t ∈ q} score(t, d)
+```
+
+where `tf(t, d)` is the raw frequency stored in the posting, `df(t)` is
+the number of documents containing `t`, and `N` is the total document
+count. **Complexity** *O(|q|)* per (query, doc). The default ranker used
+by `find_pages` when no `Ranker` is supplied. Source:
+`src/ranker.py::TFIDFRanker`.
+
+### BM25 (Okapi)
+
+The industry-standard ranker; Lucene and Elasticsearch use it by default.
+
+```
+BM25(t, d) = idf(t) · (tf · (k1 + 1)) / (tf + k1 · (1 − b + b · dl/avgdl))
+idf(t)     = log((N − df(t) + 0.5) / (df(t) + 0.5) + 1)        ← Robertson IDF
+```
+
+Default `k1 = 1.5`, `b = 0.75` (textbook midpoint, configurable on the
+constructor). BM25 improves on plain TF-IDF in three ways: TF saturation
+(additional occurrences give diminishing returns), document length
+normalisation (long documents are penalised), and smoothed IDF
+(non-negative even when the term appears in every document). Source:
+`src/ranker.py::BM25Ranker`.
+
+### Conjunctive intersection (simple)
+
+N-list generalisation of Lecture 13's two-list (`galago` / `animal`)
+walk: keep one pointer per query token's sorted posting list, emit a
+doc_id when every pointer agrees on the same value, and advance the
+lagging pointers when they don't. **Complexity** linear in the sum of
+posting list lengths. Source: `src/retrieval.py::conjunctive_match`.
+
+### Skip-pointer conjunctive intersection
+
+Same problem, optimised. Lagging pointers advance in
+`sqrt(remaining_length)` jumps before falling back to a linear scan over
+the final bucket — Lecture 13's "skip pointers" optimisation, in entries
+rather than the slide deck's bytes. For skewed queries (one rare term,
+one common term) this reduces work from *O(N)* to roughly *O(√N)* on
+the long list. The two algorithms are pinned equivalent across 20
+randomised property-based trials. Source:
+`src/retrieval.py::conjunctive_match_with_skip`.
+
+### Document-at-a-Time retrieval (DAAT)
+
+Outer loop iterates candidate documents; inner loop accumulates each
+doc's score across the query terms; a bounded min-heap of `(score,
+−doc_id)` keeps the top *k* without holding every score in memory. The
+`−doc_id` negation makes the smallest-doc_id tiebreak survive eviction
+correctly when scores collide. **Memory** *O(k)*; **disk** more seeks
+(jumps between posting lists per doc). Source:
+`src/retrieval.py::document_at_a_time`.
+
+### Term-at-a-Time retrieval (TAAT)
+
+Outer loop iterates query terms; inner loop reads each posting list
+start-to-finish, adding partial scores to an accumulator hashtable.
+After every list is processed, the accumulators are sorted into the
+final ranked list. **Memory** *O(unique candidate documents)*; **disk**
+minimal seeking (sequential list reads). Source:
+`src/retrieval.py::term_at_a_time`. A property test pins TAAT and DAAT
+equivalent for additive rankers (TF-IDF and BM25 qualify).
+
+### Phrase query (position-offset intersection)
+
+For a phrase `[t_0, t_1, …, t_{n−1}]` to occur in document `d` starting
+at position `p`, the index must record `t_i` at position `p + i` for
+every `i`. Equivalently:
+
+```
+normalised_i = { pos − i : pos ∈ positions(t_i, d), pos ≥ i }
+phrase exists ⇔ intersection(normalised_0, …, normalised_{n−1}) ≠ ∅
+```
+
+The shared value in the intersection is exactly `p`, the phrase's
+starting position. A conjunctive prefilter eliminates non-candidate
+documents without touching positions. Source:
+`src/retrieval.py::phrase_match`.
+
+---
+
 ## Design decisions
 
 | Choice | Why |
@@ -256,3 +390,95 @@ Every push to `main` and every pull request triggers
 * **fails the build if total coverage drops below 85 %** (current: 92.5 %).
 
 A green CI badge above means the latest `main` commit passes all 207 tests on all three supported Python versions.
+
+---
+
+## Limitations
+
+Known limitations of the current implementation, captured here for
+honesty and because they motivate the "future work" portion of the
+video demonstration:
+
+- **Phrase queries can spuriously match across structural boundaries.**
+  Body positions are global offsets through the flattened body text, so
+  a phrase whose first token is the last word of one structural element
+  and whose second token is the first word of the next can match
+  falsely. A correct fix would have the indexer carry phrase-boundary
+  tokens. The limitation is documented in `phrase_match`'s docstring;
+  quotes.toscrape.com rarely surfaces it in practice.
+- **The crawler doesn't honour `<base href>` in HTML `<head>`.** URLs
+  are resolved against the requesting URL only. The target site doesn't
+  use `<base>`, so this doesn't affect this submission, but a general
+  crawler would.
+- **URL normalisation is minimal.** `/page/2/` and `/page/2` would be
+  treated as distinct URLs. The target site is internally consistent,
+  so there's no actual duplication in practice.
+- **`build_index` is batch-only.** Re-running `build` rebuilds from
+  scratch; there is no incremental update path.
+- **`save_index` is not atomic.** A crash mid-write leaves a partial
+  JSON file. The loader rejects it via the version / schema check
+  rather than silently producing wrong results.
+- **The Porter stemmer is Step 1 only.** Steps 2 – 5 of Porter's
+  original algorithm (derivational suffixes such as `-ization`,
+  `-fulness`) are omitted; Lecture 11 notes English stemming
+  improvements are typically below 5 %, so Step 1 captures most of
+  the value with a fraction of the code.
+- **The stopword list is intentionally small (~25 words).** Larger
+  lists (NLTK's 179, sklearn's 318) risk the *"to be or not to be"*
+  failure mode Lecture 11 specifically warns about.
+
+---
+
+## References
+
+- **Croft, W. B., Metzler, D., & Strohman, T.** (2010). *Search Engines:
+  Information Retrieval in Practice*. Addison-Wesley. — Chapter 5 is the
+  source for BM25, length normalisation, and the DAAT / TAAT pseudocode
+  reproduced in Lecture 13; cited as further reading at the end of L13.
+- **Manning, C. D., Raghavan, P., & Schütze, H.** (2008). *Introduction
+  to Information Retrieval*. Cambridge University Press. — Source for
+  the positional-index phrase-query technique used in `phrase_match`.
+- **Porter, M. F.** (1980). *An algorithm for suffix stripping*.
+  *Program* 14(3), 130 – 137. — Steps 1a, 1b, and 1c implemented in
+  `src/tokenizer.py::porter_stem`.
+- **Robertson, S. E., Walker, S., Jones, S., Hancock-Beaulieu, M. M.,
+  & Gatford, M.** (1995). *Okapi at TREC-3*. Proceedings of the Third
+  Text REtrieval Conference. — Origin of the BM25 formula and the
+  Robertson IDF smoothing used by `BM25Ranker`.
+
+---
+
+## Acknowledgments
+
+- **Dr Ammar Alsalka** — module lead for COMP3011 Web Services and Web
+  Data. The lecture slides and assessment brief shaped the design from
+  BFS crawling (Lecture 9) through skip-pointer retrieval (Lecture 13).
+- **Mr Omar Choudhry** — module teaching assistant.
+- [`quotes.toscrape.com`](https://quotes.toscrape.com/) — the target
+  crawling site, deliberately maintained as a scrape-friendly fixture.
+
+### Use of Generative AI
+
+This implementation was developed with the assistance of Anthropic
+Claude (via Claude Code) as a paired design and code-review collaborator
+throughout the iterative development of the project.
+
+Every line of code in this submission has been read, understood, and
+deliberately retained by the author. Architectural decisions —
+including the choice to keep both the simple and skip-pointer
+conjunctive intersection in the codebase, the decision to default
+stopword filtering and stemming OFF for brief compliance, and the
+property-based testing strategy with deterministic random seeds — are
+explicit trade-offs the author chose to make rather than passive
+acceptance of AI output.
+
+A detailed critical evaluation of the AI workflow — including specific
+examples of where suggestions were accepted, modified, or rejected, and
+the impact on learning — is presented in the accompanying 5-minute
+video demonstration as required by the assessment brief.
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE).
