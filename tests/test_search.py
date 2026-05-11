@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from src.crawler import CrawledPage
 from src.indexer import Index, build_index
@@ -703,6 +704,90 @@ class ParseFacetsTests(unittest.TestCase):
         # routing odd input through the free-text path.
         with self.assertRaises(ValueError):
             parse_facets(["x=y"])
+
+
+def _build_large_word_index(n: int) -> Index:
+    """Synthetic index with ``n`` unique tokens; vocab>=n.
+
+    Used by the BK-tree cache tests below to exceed
+    ``BKTREE_MIN_VOCAB`` cheaply — every posting points at the same
+    placeholder doc_id, which is plenty for vocab-size-based
+    suggestion logic.
+    """
+    return Index(
+        documents={0: "page-1"},
+        postings={
+            f"word{i:04d}": {0: {"frequency": 1, "positions": [0]}}
+            for i in range(n)
+        },
+    )
+
+
+class SuggestForQueryBKTreeCacheTests(unittest.TestCase):
+    """v1.6.0: ``suggest_for_query`` caches its BK-tree per index.
+
+    Without the cache, every zero-result ``find`` invocation would
+    rebuild the tree from scratch — ~100ms on a 5000-term vocab.
+    These tests pin that the build happens at most once per Index
+    instance regardless of how many ``find`` calls hit the
+    "Did you mean..." path.
+    """
+
+    def test_bktree_built_once_across_multiple_suggest_calls(self):
+        from src.bktree import BKTree
+        from src.search import suggest_for_query
+        from src.suggest import BKTREE_MIN_VOCAB
+
+        index = _build_large_word_index(BKTREE_MIN_VOCAB + 10)
+
+        # Patching at the search-module reference catches every
+        # build that goes through suggest_for_query's cache path.
+        # suggest_corrections has its own internal build branch
+        # (in src.suggest) but the search layer always supplies the
+        # cached tree, so that branch should not fire here.
+        with patch("src.search.BKTree", wraps=BKTree) as bktree_spy:
+            suggest_for_query(index, "wrod0001")
+            suggest_for_query(index, "wrod0002")
+            suggest_for_query(index, "wrod0003")
+
+        self.assertEqual(
+            bktree_spy.call_count, 1,
+            "BK-tree must be built once per index, then reused",
+        )
+
+    def test_two_indexes_get_independent_caches(self):
+        from src.bktree import BKTree
+        from src.search import suggest_for_query
+        from src.suggest import BKTREE_MIN_VOCAB
+
+        index_a = _build_large_word_index(BKTREE_MIN_VOCAB + 10)
+        index_b = _build_large_word_index(BKTREE_MIN_VOCAB + 10)
+
+        with patch("src.search.BKTree", wraps=BKTree) as bktree_spy:
+            suggest_for_query(index_a, "wrod0001")
+            suggest_for_query(index_b, "wrod0001")
+
+        self.assertEqual(
+            bktree_spy.call_count, 2,
+            "each index must build its own tree — caches must not leak",
+        )
+
+    def test_small_vocabulary_skips_bktree_build_entirely(self):
+        # Below BKTREE_MIN_VOCAB → linear scan inside suggest_corrections;
+        # _get_or_build_bktree returns None so nothing is built and
+        # nothing is cached.
+        from src.bktree import BKTree
+        from src.search import suggest_for_query
+
+        index = _build_large_word_index(10)  # well under threshold
+
+        with patch("src.search.BKTree", wraps=BKTree) as bktree_spy:
+            suggest_for_query(index, "wrod0001")
+
+        self.assertEqual(
+            bktree_spy.call_count, 0,
+            "small vocab must not pay the BK-tree build cost",
+        )
 
 
 class SuggestForQueryTests(unittest.TestCase):

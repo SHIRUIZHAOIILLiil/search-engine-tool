@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, cast
 
+from src.bktree import BKTree
 from src.indexer import FIELD_NAMES, Index
 from src.ranker import Ranker, TFIDFRanker
 from src.retrieval import conjunctive_retrieval, phrase_retrieval
 from src.snippet import extract_snippet
-from src.suggest import suggest_corrections
+from src.suggest import BKTREE_MIN_VOCAB, levenshtein_distance, suggest_corrections
 from src.tokenizer import tokenize
+
+# Instance attribute used to memoise a BK-tree on an :class:`Index`.
+# Stored via ``setattr`` rather than a dataclass field so the Index
+# stays a pure data shape — save/load round-trip ignores the cache,
+# equality comparisons in tests stay shape-only, and the indexer
+# module gains zero new dependencies on the spelling layer.
+_BKTREE_ATTR = "_bktree_cache"
 
 
 def print_word(index: Index, word: str) -> dict[str, object]:
@@ -430,6 +438,12 @@ def suggest_for_query(
     are omitted from the returned mapping — they are not typo
     candidates and surfacing synonyms would clutter the CLI.
 
+    For large vocabularies the function reuses a cached BK-tree per
+    :class:`Index` instance via :func:`_get_or_build_bktree`. This
+    amortises the tree-build cost across every ``find`` invocation
+    in one CLI session — without this cache, a 5000-term vocab
+    would pay the ~100ms build on every zero-result query.
+
     Returns:
         Mapping ``{unknown_token: [candidate_1, ...]}`` sorted by
         edit distance ascending. The mapping is empty when every
@@ -445,7 +459,34 @@ def suggest_for_query(
         index.postings.keys(),
         max_distance=max_distance,
         max_suggestions=max_suggestions,
+        bktree=_get_or_build_bktree(index),
     )
+
+
+def _get_or_build_bktree(index: Index) -> BKTree | None:
+    """Lazily build a BK-tree over the index vocabulary and cache it.
+
+    Returns ``None`` when the vocabulary is smaller than
+    :data:`~src.suggest.BKTREE_MIN_VOCAB` — at that scale the linear
+    scan beats the tree-build cost, so building one would be wasted
+    work. The cache is stored on the index instance via ``setattr``
+    so the dataclass shape stays unchanged (see ``_BKTREE_ATTR``
+    rationale near the imports).
+
+    Invalidation: the cache lives for the lifetime of the in-memory
+    :class:`Index` instance. A fresh ``load`` produces a new Index
+    (with no cache), and a fresh ``build`` likewise. There is no
+    point in invalidating during a session — ``build`` and ``load``
+    are the only operations that mutate the vocabulary.
+    """
+    vocab_size = len(index.postings)
+    if vocab_size < BKTREE_MIN_VOCAB:
+        return None
+    cached = cast(BKTree | None, getattr(index, _BKTREE_ATTR, None))
+    if cached is None:
+        cached = BKTree(levenshtein_distance, list(index.postings.keys()))
+        setattr(index, _BKTREE_ATTR, cached)
+    return cached
 
 
 def format_did_you_mean(
