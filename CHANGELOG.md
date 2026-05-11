@@ -9,6 +9,123 @@ implementation steps these tags trace back to are summarised in the
 [Lecture alignment](README.md#lecture-alignment) and
 [Algorithms](README.md#algorithms) sections of the README.
 
+## [1.4.0] — 2026-05-11
+
+### Added
+- `src/snippet.py` — Wagner-Fischer-free static snippet generator
+  (Manning et al. Ch. 8.7). Anchors on the earliest match, expands a
+  ±35-char window with a 20-char whitespace-snap slack, highlights
+  matches with `[brackets]`. Phrase mode brackets the whole phrase
+  as one unit.
+- `Index.documents_text` field persisting raw body text per doc so
+  the snippet generator can quote context without re-fetching pages.
+- `find_pages_with_snippets` and `find_phrase_with_snippets` in
+  `src/search.py`; the CLI `find` command surfaces `URL\n  snippet`
+  per result.
+- 19 tests in `tests/test_snippet.py` covering window selection,
+  word boundaries, slack bounds, phrase mode, and edge cases.
+- 11 tests across `tests/test_search.py` and `tests/test_main.py`
+  covering the snippet wiring and CLI output format.
+
+### Changed
+- `INDEX_VERSION` bumped from 4 to 5 for the new `documents_text`
+  field. **Breaking on-disk format change** — existing v4
+  `data/index.json` files will be rejected by `load_index`; run
+  `build` once to regenerate. The version guard surfaces a clear
+  error message rather than letting a stale file silently produce
+  empty snippets.
+
+## [1.3.0] — 2026-05-11
+
+Engineering-quality bundle: standardised project metadata, two new
+CI gates, and two robustness improvements that close known failure
+modes from v1.2.0.
+
+### Added
+- `pyproject.toml` (PEP 621) as the canonical project metadata,
+  subsuming `.coveragerc`. Contains `[project]` block, coverage
+  configuration, and pre-staged `[tool.ruff]` and `[tool.mypy]`
+  configurations.
+- **ruff lint as a CI gate** — fails the build on style violations
+  (pyflakes, pycodestyle, import sort, bugbear). `requirements-dev.txt`
+  adds `ruff>=0.4`.
+- **mypy type check as a CI gate** — moderate strictness
+  (`check_untyped_defs`, `warn_redundant_casts`, `warn_unused_ignores`,
+  `warn_unreachable`, `no_implicit_optional`). `requirements-dev.txt`
+  adds `mypy>=1.10`.
+- Three atomicity tests in `tests/test_indexer.py` covering the
+  happy path, mid-write failure, and mid-rename failure.
+- Four crawler tests in `tests/test_crawler.py` covering session
+  ownership, adapter mount points, retry configuration, and
+  cross-fetch session reuse.
+
+### Changed
+- `save_index` is now atomic: writes to `<path>.tmp`, then
+  `os.replace` (atomic on POSIX and Windows). A crash mid-write
+  leaves the previous `index.json` untouched rather than corrupting
+  it half-way.
+- `QuoteCrawler` owns one `requests.Session` for its lifetime, with
+  a urllib3 retry adapter mounted on both `http://` and `https://`.
+  `total=3` retries, `backoff_factor=0.5`, `status_forcelist=[502, 503, 504]`,
+  GET-only. Cumulative backoff stays well below the 6-second
+  politeness window.
+- Type narrowing in `src/crawler.py` for `BeautifulSoup.Tag.get` to
+  satisfy mypy without `# type: ignore`.
+- `typing.cast(int, ...)` in `src/indexer.py` and `src/ranker.py`
+  where the `dict[str, object]` posting representation crosses an
+  integer-only operation; refactor to a `TypedDict` deferred to v1.7.0.
+
+### Removed
+- `.coveragerc` — replaced by `[tool.coverage]` in `pyproject.toml`.
+
+## [1.2.0] — 2026-05-11
+
+### Added
+- `src/suggest.py` — Wagner-Fischer Levenshtein distance with
+  rolling two-row DP (O(min(|s1|, |s2|)) space) and a vocabulary
+  candidate generator. Length-difference pruning skips terms that
+  cannot be within the edit-distance threshold.
+- `suggest_for_query` and `format_did_you_mean` in `src/search.py`.
+- CLI `find` prints `Did you mean: <reformulated query>?` on the
+  line after `No matching pages found.` when:
+  1. at least one query token is missing from the index vocabulary,
+     AND
+  2. at least one such token has a vocabulary neighbour within
+     edit distance 2.
+- 22 tests in `tests/test_suggest.py`, 12 in `tests/test_search.py`,
+  4 in `tests/test_main.py`, and 4 integration tests in
+  `tests/test_integration.py` covering the full crawl → build →
+  load → find pipeline with a typo.
+
+### Changed
+- The implementation is "plain" Levenshtein, not Damerau —
+  transpositions like `freind <-> friend` cost 2 edits, not 1.
+  Documented explicitly in `src/suggest.py` and pinned by a test.
+
+## [1.1.0] — 2026-05-11
+
+### Added
+- `benchmarks/` directory with a deterministic synthetic-corpus
+  generator (`benchmarks/corpus.py`) and a benchmark runner
+  (`benchmarks/run_benchmarks.py`).
+- Runner compares two algorithm groups against each other:
+  - **Group A — ranked retrieval** (top-10): DAAT and TAAT, each
+    paired with both TF-IDF and BM25.
+  - **Group B — intersection only**: simple conjunctive intersection
+    vs the skip-pointer variant.
+  Three query shapes (single common, multi-balanced, skewed rare+common)
+  with three instances each, four default sizes (250 / 500 / 1000 / 2000),
+  five measured repetitions per cell plus one discarded warmup.
+- Output: terminal table, JSON (full data + run metadata), CSV (flat
+  schema), and Markdown (report-ready tables). All artefacts land in
+  `benchmarks/results/` and are git-ignored.
+- 12 tests in `tests/test_benchmarks.py` covering the synthesizer
+  contract, query selection across the three shapes, and a smoke
+  test that drives the full runner end-to-end with tiny inputs.
+- README "Benchmarks" section documenting reproduction, methodology
+  notes (warmup, IQR, time/memory separated), and the rationale for
+  not running benchmarks in CI.
+
 ## [1.0.0] — 2026-05-11
 
 Submission release. Consolidates v0.1.0 through v0.17.0; no new code,
@@ -203,6 +320,10 @@ shell with the four required `build` / `load` / `print` / `find`
 commands, a single-file JSON-persisted inverted index, and the first
 round of unit tests covering the indexer and search modules.
 
+[1.4.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.4.0
+[1.3.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.3.0
+[1.2.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.2.0
+[1.1.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.1.0
 [1.0.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.0.0
 [0.17.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v0.17.0
 [0.16.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v0.16.0
