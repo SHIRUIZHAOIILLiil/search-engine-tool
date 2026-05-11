@@ -9,6 +9,51 @@ implementation steps these tags trace back to are summarised in the
 [Lecture alignment](README.md#lecture-alignment) and
 [Algorithms](README.md#algorithms) sections of the README.
 
+## [1.7.0] — 2026-05-12
+
+Closing-quality polish on top of the v1.6.0 algorithmic novel
+contribution: tightens the type surface end-to-end, ships the
+documentation suite a publication-grade project is expected to
+carry, and folds API-doc generation into the CI gate.
+
+### Added
+- `docs/architecture.md` — system-level architecture document
+  with repository layout, module-decomposition table, two
+  mermaid pipeline diagrams (ingestion / query), schema-evolution
+  table `v1`→`v5`, five recurring design patterns, five extension
+  points, and a six-reference bibliography. ~280 lines.
+- `CONTRIBUTING.md` — contributor onboarding: dev setup,
+  toolchain commands, code-style and type-hint conventions,
+  Conventional Commits and branch-per-step workflow, four-layer
+  testing strategy, "how to add a feature without breaking the
+  brief" checklist, schema-change checklist, documentation
+  cross-reference table.
+- `scripts/build_api_docs.py` — wrapper around `pdoc` that
+  generates HTML API docs into `docs/api/` (gitignored). Supports
+  `--clean` for stale-page removal and `--smoke` for the CI gate.
+- `pdoc>=14.0` added to `requirements-dev.txt`.
+- **Fourth CI gate**: `python scripts/build_api_docs.py --smoke`
+  in `.github/workflows/ci.yml` fails the pipeline if any
+  `src/` docstring fails to parse cleanly. `scripts/` joins
+  `src/`, `tests/`, `benchmarks/` in the ruff lint pass.
+- README **Documentation** section cross-linking
+  `docs/architecture.md`, `CONTRIBUTING.md`, `CHANGELOG.md` and
+  the pdoc build commands.
+
+### Changed
+- **TypedDict refactor**: `src/indexer.py::Posting` and
+  `FieldStats` are now proper `typing.TypedDict` declarations
+  instead of `dict[str, object]`. Removes four `typing.cast(int, ...)`
+  calls (two in `indexer.py`, two in `ranker.py`) and five
+  defensive `isinstance` guards (in `retrieval.py` and `search.py`)
+  whose False branches mypy can now see are statically dead.
+  Runtime layout and JSON serialisation are byte-identical — only
+  the static type changed, so existing v5 `index.json` files load
+  unchanged.
+- `pyproject.toml` `[tool.mypy]` comment updated to reflect that
+  the Posting representation is now fully typed (the v1.3.0 note
+  about "deferred to v1.7.0" is resolved).
+
 ## [1.6.0] — 2026-05-11
 
 The v1.2.0 "Did you mean..." path used a length-pruned linear scan
@@ -403,6 +448,7 @@ shell with the four required `build` / `load` / `print` / `find`
 commands, a single-file JSON-persisted inverted index, and the first
 round of unit tests covering the indexer and search modules.
 
+[1.7.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.7.0
 [1.6.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.6.0
 [1.5.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.5.0
 [1.4.0]: https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/releases/tag/v1.4.0

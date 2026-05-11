@@ -338,11 +338,10 @@ def phrase_match(
         for offset, token in enumerate(query_tokens):
             posting = index.postings[token][doc_id]
             raw_positions = posting.get("positions", [])
-            if not isinstance(raw_positions, list):
-                normalised.append(set())
-                continue
             # Drop positions that would imply the phrase starting
             # before index 0 — they cannot align with a valid offset.
+            # ``raw_positions`` is statically ``list[int]`` (Posting
+            # TypedDict in v1.7.0); no runtime isinstance check needed.
             normalised.append({p - offset for p in raw_positions if p >= offset})
 
         if normalised and set.intersection(*normalised):
