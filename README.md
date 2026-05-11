@@ -24,9 +24,10 @@ The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), 
 - **Four retrieval algorithms** from Lecture 13: document-at-a-time (DAAT), term-at-a-time (TAAT), conjunctive intersection (simple), and the skip-pointer optimised variant — DAAT and TAAT are pinned equivalent under additive rankers; the two conjunctive variants are pinned equivalent across 20 randomised trials.
 - **Phrase queries** via the position-offset intersection trick — `find "good friends"` requires the tokens to appear adjacent and in order.
 - **Opt-in text normalisation** — `TokenizerConfig` enables a ~25-word English stopword filter and Porter Step 1 stemming; default is off to preserve brief-compliant semantics.
+- **Query suggestions ("Did you mean...?")** — when `find` returns zero results and at least one query token is missing from the index vocabulary, the CLI offers a reformulated query using Levenshtein-distance lookups (Manning et al., Ch. 3).
 - **Schema version guard** — `load` refuses to read indexes written by an incompatible version.
 - **UTF-8 CLI output** — `run_shell` reconfigures stdout so smart quotes and other Unicode characters in scraped quotes render correctly on Windows terminals.
-- **207 tests at 92.5 % coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
+- **261 tests at 92.5 % coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
 
 ---
 
@@ -161,7 +162,7 @@ At the `>` prompt:
 | `help` | Show the command list |
 | `exit` / `quit` | Leave the shell |
 
-**Example session** — the first four lines are the brief's canonical examples; the last line exercises the phrase mode added in this implementation:
+**Example session** — the first four lines are the brief's canonical examples; subsequent lines exercise the phrase mode and the spelling-correction hint added in this implementation:
 
 ```text
 > build
@@ -170,6 +171,9 @@ At the `>` prompt:
 > find indifference
 > find good friends
 > find "good friends"
+> find indiference
+No matching pages found.
+Did you mean: indifference?
 ```
 
 ---
@@ -306,6 +310,46 @@ starting position. A conjunctive prefilter eliminates non-candidate
 documents without touching positions. Source:
 `src/retrieval.py::phrase_match`.
 
+### Spelling correction (Levenshtein edit distance)
+
+When a `find` invocation returns zero results, the CLI inspects each
+query token against the index's posting-list vocabulary. If at least
+one token is unknown AND at least one near-neighbour exists within
+two edits, a reformulated query is printed:
+
+```
+> find indiference
+No matching pages found.
+Did you mean: indifference?
+```
+
+Edit distance follows the textbook Wagner–Fischer dynamic program
+(Manning, Raghavan & Schütze, *Introduction to Information
+Retrieval*, Ch. 3). Substitutions, insertions and deletions each
+cost 1; transpositions cost 2 (this is plain Levenshtein, not
+Damerau). The implementation is space-optimised to *O(min(|s1|,
+|s2|))* via a rolling two-row buffer, and prunes candidates whose
+length differs from the query token by more than the distance
+threshold before running the DP.
+
+**Suppression rules** — the hint is deliberately silent when:
+
+* every query token is already in the vocabulary (zero results are
+  then an AND-filter miss, not a typo), or
+* an unknown token has no candidate within the distance threshold
+  (no useful correction to offer).
+
+This avoids the "Did you mean: <synonym>?" noise that would otherwise
+appear on legitimate but rare queries. Source:
+[`src/suggest.py`](src/suggest.py) (distance + candidate generation),
+[`src/search.py::format_did_you_mean`](src/search.py) (CLI hint
+formatter).
+
+At v1.2.0's scale (vocabulary ≲ 5 000 terms) the suggestion path
+runs a linear scan over the vocabulary at query time. A BK-tree
+index would cut this to *O(log N)* — that optimisation is queued for
+v1.6.0 and will slot under the same public API.
+
 ---
 
 ## Benchmarks
@@ -441,7 +485,7 @@ for the implementation.
 python -m unittest discover
 ```
 
-The test suite currently runs **219 tests** with no warnings and reaches **92.5 % line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
+The test suite currently runs **261 tests** with no warnings and reaches **92.5 % line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
 
 | File | Layer | Coverage |
 |---|---|---|
@@ -452,7 +496,8 @@ The test suite currently runs **219 tests** with no warnings and reaches **92.5 
 | [`tests/test_indexer.py`](tests/test_indexer.py) | Unit | Build, doc-id assignment, fields/extents, doc-length tracking, save/load |
 | [`tests/test_ranker.py`](tests/test_ranker.py) | Unit | TF-IDF and BM25 formulas, edge cases, Ranker protocol |
 | [`tests/test_retrieval.py`](tests/test_retrieval.py) | Unit | DAAT / TAAT / conjunctive / skip-pointer / phrase algorithms |
-| [`tests/test_search.py`](tests/test_search.py) | Unit | `print_word`, `find_pages`, `find_phrase` user-facing behaviour |
+| [`tests/test_search.py`](tests/test_search.py) | Unit | `print_word`, `find_pages`, `find_phrase`, `suggest_for_query`, `format_did_you_mean` user-facing behaviour |
+| [`tests/test_suggest.py`](tests/test_suggest.py) | Unit | Wagner-Fischer Levenshtein distance and vocabulary-based candidate generation |
 | [`tests/test_main.py`](tests/test_main.py) | Unit | CLI command handler, robots wiring, UTF-8 stdout |
 | [`tests/test_integration.py`](tests/test_integration.py) | Integration | Full pipeline: stub HTTP → crawl → build → save/load → find / phrase |
 | [`tests/test_performance.py`](tests/test_performance.py) | Performance | Regression budgets on 500-page synthetic corpus |
@@ -468,7 +513,7 @@ Every push to `main` and every pull request triggers
 * prints a per-module coverage report with missing-line numbers, and
 * **fails the build if total coverage drops below 85 %** (current: 92.5 %).
 
-A green CI badge above means the latest `main` commit passes all 219 tests on all three supported Python versions.
+A green CI badge above means the latest `main` commit passes all 261 tests on all three supported Python versions.
 
 ---
 
