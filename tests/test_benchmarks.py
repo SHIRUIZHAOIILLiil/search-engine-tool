@@ -12,6 +12,7 @@ asserting the output schema rather than the timing numbers.
 import csv
 import io
 import json
+import random
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -19,7 +20,10 @@ from tempfile import TemporaryDirectory
 
 from benchmarks.corpus import (
     DEFAULT_VOCAB_SIZE,
+    make_typo,
+    synthesize_clustered_vocabulary,
     synthesize_pages,
+    synthesize_vocabulary,
 )
 from benchmarks.run_benchmarks import (
     ALGORITHMS,
@@ -27,6 +31,8 @@ from benchmarks.run_benchmarks import (
     run,
     select_queries,
 )
+from benchmarks.run_suggest_benchmark import main as suggest_main
+from benchmarks.run_suggest_benchmark import run as suggest_run
 from src.indexer import build_index
 
 
@@ -185,6 +191,116 @@ class BenchmarkRunnerSmokeTests(unittest.TestCase):
                 rc = main(["--quick", "--output", tmp])
             self.assertEqual(rc, 0)
             self.assertTrue(list(Path(tmp).glob("benchmark-*.json")))
+
+
+class SynthesizeVocabularyTests(unittest.TestCase):
+    """v1.6.0: vocabulary generators for the suggest benchmark."""
+
+    def test_random_vocabulary_is_deterministic_under_same_seed(self):
+        first = synthesize_vocabulary(50, seed=42)
+        second = synthesize_vocabulary(50, seed=42)
+        self.assertEqual(first, second)
+
+    def test_random_vocabulary_returns_requested_size(self):
+        vocab = synthesize_vocabulary(80)
+        self.assertEqual(len(vocab), 80)
+        # All entries unique by virtue of set-backed generation.
+        self.assertEqual(len(set(vocab)), 80)
+
+    def test_random_vocabulary_rejects_invalid_inputs(self):
+        with self.assertRaises(ValueError):
+            synthesize_vocabulary(-1)
+        with self.assertRaises(ValueError):
+            synthesize_vocabulary(10, word_length_range=(5, 2))
+
+    def test_clustered_vocabulary_is_deterministic_under_same_seed(self):
+        first = synthesize_clustered_vocabulary(100, seed=42)
+        second = synthesize_clustered_vocabulary(100, seed=42)
+        self.assertEqual(first, second)
+
+    def test_clustered_vocabulary_words_share_stems(self):
+        # The whole point of "clustered" is that several vocabulary
+        # terms share a common prefix (their stem). Verify by checking
+        # that the unique-prefix count is significantly less than the
+        # vocabulary size.
+        vocab = synthesize_clustered_vocabulary(200)
+        prefixes_3char = {word[:3] for word in vocab if len(word) >= 3}
+        # 200 words mapped to <100 distinct 3-char prefixes is "clustered".
+        self.assertLess(len(prefixes_3char), 100)
+
+
+class MakeTypoTests(unittest.TestCase):
+    def test_typo_is_short_distance_from_source(self):
+        rng = random.Random(0)
+        for original in ("friend", "wisdom", "knowledge", "x"):
+            target = make_typo(original, n_edits=1, rng=rng)
+            # One random edit is at most 1 edit away. We cannot
+            # assert exactly 1 because delete on a length-1 string
+            # is a no-op (special case in make_typo's contract).
+            from src.suggest import levenshtein_distance
+            self.assertLessEqual(levenshtein_distance(target, original), 1)
+
+    def test_typo_rejects_invalid_inputs(self):
+        rng = random.Random(0)
+        with self.assertRaises(ValueError):
+            make_typo("word", n_edits=-1, rng=rng)
+        with self.assertRaises(ValueError):
+            make_typo("", n_edits=1, rng=rng)
+
+
+class SuggestBenchmarkRunnerSmokeTests(unittest.TestCase):
+    def test_run_produces_json_csv_and_markdown(self):
+        with TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            report = suggest_run(
+                sizes=[40],
+                reps=2,
+                n_targets=5,
+                output_dir=out,
+                style="clustered",
+                progress=lambda _msg: None,
+            )
+
+            self.assertEqual(len(list(out.glob("suggest-benchmark-*.json"))), 1)
+            self.assertEqual(len(list(out.glob("suggest-benchmark-*.csv"))), 1)
+            self.assertEqual(len(list(out.glob("suggest-benchmark-*.md"))), 1)
+
+            algos_in_report = {c.algorithm for c in report.cells}
+            self.assertEqual(algos_in_report, {"linear", "bktree"})
+            metrics_in_report = {c.metric for c in report.cells}
+            self.assertIn("time_median_seconds", metrics_in_report)
+            self.assertIn("memory_peak_bytes", metrics_in_report)
+
+    def test_run_rejects_unknown_style(self):
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                suggest_run(
+                    sizes=[20],
+                    reps=2,
+                    n_targets=3,
+                    output_dir=Path(tmp),
+                    style="nonexistent",
+                    progress=lambda _msg: None,
+                )
+
+    def test_main_cli_quick_mode_runs(self):
+        with TemporaryDirectory() as tmp:
+            with redirect_stdout(io.StringIO()):
+                rc = suggest_main(["--quick", "--output", tmp])
+            self.assertEqual(rc, 0)
+            self.assertTrue(list(Path(tmp).glob("suggest-benchmark-*.json")))
+
+    def test_main_cli_random_style_is_supported(self):
+        with TemporaryDirectory() as tmp:
+            with redirect_stdout(io.StringIO()):
+                rc = suggest_main([
+                    "--quick", "--output", tmp, "--style", "random",
+                ])
+            self.assertEqual(rc, 0)
+            json_files = list(Path(tmp).glob("suggest-benchmark-*.json"))
+            self.assertEqual(len(json_files), 1)
+            payload = json.loads(json_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(payload["metadata"]["vocab_style"], "random")
 
 
 if __name__ == "__main__":

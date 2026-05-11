@@ -24,7 +24,7 @@ The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), 
 - **Four retrieval algorithms** from Lecture 13: document-at-a-time (DAAT), term-at-a-time (TAAT), conjunctive intersection (simple), and the skip-pointer optimised variant — DAAT and TAAT are pinned equivalent under additive rankers; the two conjunctive variants are pinned equivalent across 20 randomised trials.
 - **Phrase queries** via the position-offset intersection trick — `find "good friends"` requires the tokens to appear adjacent and in order.
 - **Opt-in text normalisation** — `TokenizerConfig` enables a ~25-word English stopword filter and Porter Step 1 stemming; default is off to preserve brief-compliant semantics.
-- **Query suggestions ("Did you mean...?")** — when `find` returns zero results and at least one query token is missing from the index vocabulary, the CLI offers a reformulated query using Levenshtein-distance lookups (Manning et al., Ch. 3).
+- **Query suggestions ("Did you mean...?")** — when `find` returns zero results and at least one query token is missing from the index vocabulary, the CLI offers a reformulated query using Levenshtein-distance lookups (Manning et al., Ch. 3). On large vocabularies the lookup is accelerated by a **BK-tree** (Burkhard & Keller 1973) cached per index; on the project's clustered synthetic benchmark this gives ~2x speedup over a length-pruned linear scan.
 - **Highlighted snippets** — each `find` result now prints a 60-80 character body excerpt with the matching tokens wrapped in `[brackets]` (Manning et al., Ch. 8.7 "Summarization and snippet generation"). Phrase queries highlight the whole phrase as one unit.
 - **Faceted search** — `find author=einstein wisdom` filters by structural field on top of the conjunctive AND match. Same field with multiple values is OR (`tag=science tag=physics`); across fields is AND. Builds on Lecture 12's "Fields and Extents" representation already present in every posting.
 - **Atomic index persistence** — `save_index` writes via a sibling `.tmp` file and `os.replace`, so a crash during `build` leaves the previous good `index.json` untouched.
@@ -32,7 +32,7 @@ The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), 
 - **Schema version guard** — `load` refuses to read indexes written by an incompatible version.
 - **UTF-8 CLI output** — `run_shell` reconfigures stdout so smart quotes and other Unicode characters in scraped quotes render correctly on Windows terminals.
 - **Three CI gates** — ruff lint, mypy type check, and the test suite all run on every push/PR; coverage must stay above 85 %.
-- **338 tests at 93 %+ coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
+- **370 tests at 93 %+ coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
 
 ---
 
@@ -377,10 +377,41 @@ appear on legitimate but rare queries. Source:
 [`src/search.py::format_did_you_mean`](src/search.py) (CLI hint
 formatter).
 
-At v1.2.0's scale (vocabulary ≲ 5 000 terms) the suggestion path
-runs a linear scan over the vocabulary at query time. A BK-tree
-index would cut this to *O(log N)* — that optimisation is queued for
-v1.6.0 and will slot under the same public API.
+Two implementations coexist under one API. The simple **length-pruned
+linear scan** (`src/suggest.py::_suggest_via_linear_scan`) walks every
+vocabulary term, skipping any whose length differs from the query
+token by more than `max_distance`. This is the v1.2.0 baseline —
+cheap on small vocabularies, O(N) per query token.
+
+For vocabularies of `BKTREE_MIN_VOCAB` terms or more (currently 500),
+`suggest_corrections` switches transparently to a **BK-tree**
+(Burkhard & Keller 1973; Manning et al. Ch. 3.3). The tree exploits
+the triangle inequality that any metric obeys: when every edge from
+node *p* to child *c* is labelled with `d(p, c)`, a query for terms
+within distance *k* of target *t* can skip a subtree whenever
+`|edge_weight − d(t, p)| > k`. On natural-language vocabularies
+(where words cluster around common stems) this prunes ~50% of the
+search per node and yields *O(log N)* expected behaviour.
+
+The dual-implementation pattern follows the same shape used for
+the v0.14.0 skip-pointer optimisation: both paths are kept side by
+side, a property test ensures they return identical results on
+random inputs, and the production code only switches to the
+optimised path past a size threshold where the cost of the
+auxiliary structure is amortised.
+
+**Cached per index** — `src/search.py::_get_or_build_bktree` lazily
+builds the tree on the first zero-result `find` of a CLI session
+and reuses it for every subsequent suggestion. Without the cache, a
+5 000-term vocab would rebuild the tree on every typo'd query
+(~100ms each).
+
+See [`src/bktree.py`](src/bktree.py) for the implementation and
+[`benchmarks/run_suggest_benchmark.py`](benchmarks/run_suggest_benchmark.py)
+for the linear-vs-tree benchmark. The benchmark reports two
+vocabulary styles — `clustered` (default; English-morphology
+synthetic) and `random` (uniform random strings) — to document
+when BK-tree's triangle pruning pays off and when it does not.
 
 ### Snippet generation (Manning et al. Ch. 8.7)
 
@@ -611,7 +642,7 @@ for the implementation.
 python -m unittest discover
 ```
 
-The test suite currently runs **338 tests** with no warnings and reaches **93 %+ line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
+The test suite currently runs **370 tests** with no warnings and reaches **93 %+ line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
 
 | File | Layer | Coverage |
 |---|---|---|
@@ -623,7 +654,8 @@ The test suite currently runs **338 tests** with no warnings and reaches **93 %+
 | [`tests/test_ranker.py`](tests/test_ranker.py) | Unit | TF-IDF and BM25 formulas, edge cases, Ranker protocol |
 | [`tests/test_retrieval.py`](tests/test_retrieval.py) | Unit | DAAT / TAAT / conjunctive / skip-pointer / phrase algorithms |
 | [`tests/test_search.py`](tests/test_search.py) | Unit | `print_word`, `find_pages`, `find_phrase`, `suggest_for_query`, `format_did_you_mean` user-facing behaviour |
-| [`tests/test_suggest.py`](tests/test_suggest.py) | Unit | Wagner-Fischer Levenshtein distance and vocabulary-based candidate generation |
+| [`tests/test_suggest.py`](tests/test_suggest.py) | Unit | Wagner-Fischer Levenshtein distance, vocabulary-based candidate generation, BK-tree path equivalence |
+| [`tests/test_bktree.py`](tests/test_bktree.py) | Unit / Property | BK-tree invariants (idempotent add, insertion-order independence, triangle-inequality pruning, equivalence to linear scan over randomised inputs) |
 | [`tests/test_snippet.py`](tests/test_snippet.py) | Unit | Window selection, word-boundary snap with slack bound, highlight markup, phrase mode |
 | [`tests/test_main.py`](tests/test_main.py) | Unit | CLI command handler, robots wiring, UTF-8 stdout |
 | [`tests/test_integration.py`](tests/test_integration.py) | Integration | Full pipeline: stub HTTP → crawl → build → save/load → find / phrase |
@@ -647,7 +679,7 @@ matrix:
    coverage gate** (current: 93 %+).
 
 A green CI badge above means the latest `main` commit clears all
-three gates (currently 338 tests) on all three supported Python versions.
+three gates (currently 370 tests) on all three supported Python versions.
 
 ---
 

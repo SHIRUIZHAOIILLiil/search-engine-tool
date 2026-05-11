@@ -7,22 +7,41 @@ suggestion function used by the ``find`` command to produce
 References:
 * Wagner & Fischer (1974), "The String-to-String Correction Problem"
   — the dynamic-programming formulation used in :func:`levenshtein_distance`.
+* Burkhard & Keller (1973), "Some approaches to best-match file
+  searching", *CACM* — the BK-tree used to accelerate large-vocabulary
+  lookup; see :mod:`src.bktree`.
 * Manning, Raghavan & Schutze, *Introduction to Information Retrieval*,
   Chapter 3 "Dictionaries and tolerant retrieval" — motivates spelling
-  correction over a posting-list vocabulary as a standard IR feature.
+  correction over a posting-list vocabulary as a standard IR feature
+  and covers BK-trees as the textbook acceleration.
 
 The distance function uses the textbook O(|s1| x |s2|) dynamic
 program with a space optimisation: only the current and previous DP
 rows are held in memory at any time, giving O(min(|s1|, |s2|)) space.
-This is enough for query-time correction over vocabularies of a few
-thousand terms — a tighter algorithm (BK-tree, n-gram filtering) is
-overkill at this scale and is queued for v1.6.0 if the corpus grows
-beyond what a linear scan handles comfortably.
+
+:func:`suggest_corrections` adapts to vocabulary size: a small
+vocabulary (under :data:`BKTREE_MIN_VOCAB` terms) uses the
+length-pruned linear scan, while a large vocabulary switches to a
+BK-tree built on the fly. Both paths are provably equivalent — a
+property test in ``tests/test_suggest.py`` pins their output set
+across randomised inputs.
 """
 
 from __future__ import annotations
 
 from typing import Iterable
+
+from src.bktree import BKTree
+
+# Vocabulary size at which the BK-tree path becomes cheaper than
+# linear scan. Below this the BK-tree's build cost (one full pass
+# over the vocab to insert nodes) is not amortised by the savings
+# on the query pass, so the simpler scan wins. The threshold was
+# settled at 500 based on the v1.1.0 benchmark methodology: a
+# synthetic 500-term vocab is the smallest size where the build
+# cost ceases to dominate a single-token query under default
+# parameters.
+BKTREE_MIN_VOCAB = 500
 
 
 def levenshtein_distance(s1: str, s2: str) -> int:
@@ -93,6 +112,7 @@ def suggest_corrections(
     *,
     max_distance: int = 2,
     max_suggestions: int = 3,
+    bktree: BKTree | None = None,
 ) -> dict[str, list[str]]:
     """Suggest vocabulary terms close to each unknown query token.
 
@@ -107,6 +127,16 @@ def suggest_corrections(
     ascending, secondarily by the term itself ascending, so the order
     is deterministic across runs and platforms.
 
+    The function adapts to the vocabulary size: small vocabularies
+    take the length-pruned linear scan; vocabularies of
+    :data:`BKTREE_MIN_VOCAB` terms or more switch to a BK-tree built
+    on the fly (Burkhard & Keller 1973). Callers that issue many
+    successive queries against the same vocabulary should pass a
+    pre-built :class:`~src.bktree.BKTree` via ``bktree`` to amortise
+    the build cost across calls — that path is what :mod:`src.search`
+    wires up so the ``Did you mean`` hint stays cheap even on the
+    largest corpora.
+
     Args:
         query_tokens: Tokens the user submitted, lowercased by the
             caller (the tokeniser already does this for index queries).
@@ -119,6 +149,11 @@ def suggest_corrections(
             candidate set.
         max_suggestions: Cap on suggestions returned per unknown
             token. Three keeps the CLI prompt readable.
+        bktree: Optional pre-built BK-tree over ``vocabulary``.
+            When supplied, replaces both the linear scan and the
+            on-the-fly BK-tree build. The caller is responsible for
+            keeping it in sync with ``vocabulary`` — a mismatch
+            silently produces wrong suggestions.
 
     Returns:
         Mapping ``{unknown_token: [candidate_1, candidate_2, ...]}``.
@@ -131,24 +166,59 @@ def suggest_corrections(
     if max_suggestions < 1:
         raise ValueError(f"max_suggestions must be positive, got {max_suggestions}")
 
-    # Materialise once; the caller might pass a generator and we need
-    # to iterate it per unknown token.
+    # Materialise the vocabulary once; the caller may pass a generator
+    # and both paths below need to iterate it (linear scan) or membership
+    # test (every path).
     vocab_list = list(vocabulary)
     vocab_set = set(vocab_list)
+    tokens_list = list(query_tokens)
 
+    if bktree is None and len(vocab_list) >= BKTREE_MIN_VOCAB:
+        # Large-vocabulary path: build a BK-tree once and query it
+        # for every unknown token in this call. Build cost is
+        # amortised over query_tokens; for the typical 1-3 token
+        # query this is already cheaper than the linear scan once
+        # the vocab passes the threshold.
+        bktree = BKTree(levenshtein_distance, vocab_list)
+
+    if bktree is not None:
+        return _suggest_via_bktree(
+            tokens_list, vocab_set, bktree,
+            max_distance=max_distance,
+            max_suggestions=max_suggestions,
+        )
+    return _suggest_via_linear_scan(
+        tokens_list, vocab_list, vocab_set,
+        max_distance=max_distance,
+        max_suggestions=max_suggestions,
+    )
+
+
+def _suggest_via_linear_scan(
+    query_tokens: list[str],
+    vocab_list: list[str],
+    vocab_set: set[str],
+    *,
+    max_distance: int,
+    max_suggestions: int,
+) -> dict[str, list[str]]:
+    """Brute-force scan with a length-difference prune.
+
+    Preserved alongside the BK-tree path as the reference
+    implementation — the property test in ``tests/test_suggest.py``
+    pins both paths to the same output set, so divergence in either
+    direction surfaces immediately. This is the same dual-impl
+    pattern that the conjunctive-match family uses (simple vs
+    skip-pointer in v1.0.0).
+    """
     suggestions: dict[str, list[str]] = {}
     for token in query_tokens:
         if token in vocab_set:
-            # Token is known; not a typo candidate — skip entirely so
-            # the CLI does not surface "Did you mean: <synonyms>?" for
-            # legitimate but rare queries.
             continue
         scored: list[tuple[int, str]] = []
         for term in vocab_list:
-            # Cheap length-difference prune — if |len(token) - len(term)|
-            # already exceeds max_distance, no edit script of cost
-            # <= max_distance can bridge them. Saves ~half the DP work
-            # on a typical English vocabulary.
+            # Length-difference prune: ``|len(token) - len(term)| > k``
+            # implies edit distance > k for any costless transformation.
             if abs(len(token) - len(term)) > max_distance:
                 continue
             d = levenshtein_distance(token, term)
@@ -156,5 +226,29 @@ def suggest_corrections(
                 scored.append((d, term))
         scored.sort(key=lambda pair: (pair[0], pair[1]))
         suggestions[token] = [term for _, term in scored[:max_suggestions]]
+    return suggestions
 
+
+def _suggest_via_bktree(
+    query_tokens: list[str],
+    vocab_set: set[str],
+    tree: BKTree,
+    *,
+    max_distance: int,
+    max_suggestions: int,
+) -> dict[str, list[str]]:
+    """BK-tree path: O(log N) expected per query token.
+
+    The BK-tree returns candidates already sorted by
+    ``(distance, term)`` so the caller's slicing in ``[:max_suggestions]``
+    keeps the closest matches. ``vocab_set`` is consulted only to
+    skip known tokens — exact-match short-circuit, same as the
+    linear scan.
+    """
+    suggestions: dict[str, list[str]] = {}
+    for token in query_tokens:
+        if token in vocab_set:
+            continue
+        scored = tree.search(token, max_distance=max_distance)
+        suggestions[token] = [term for _, term in scored[:max_suggestions]]
     return suggestions
