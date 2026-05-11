@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, cast
 
 from src.crawler import CrawledPage
 from src.parser import ParsedFields
@@ -109,7 +110,12 @@ def build_index(
                 doc_id,
                 _empty_posting(),
             )
-            posting["frequency"] = int(posting["frequency"]) + 1
+            # ``Posting`` is typed as ``dict[str, object]`` to fit
+            # both ``int`` frequencies and ``list[int]`` positions in
+            # one mapping; ``cast`` is the lightest-weight way to
+            # restore the int invariant for mypy without a wholesale
+            # ``TypedDict`` refactor (queued for v1.7.0).
+            posting["frequency"] = cast(int, posting["frequency"]) + 1
             positions = posting["positions"]
             if isinstance(positions, list):
                 positions.append(position)
@@ -159,7 +165,24 @@ def _iter_named_fields(fields: ParsedFields) -> Iterator[tuple[str, str]]:
 
 
 def save_index(index: Index, path: str | Path = "data/index.json") -> None:
-    """Save the inverted index as JSON with its schema version."""
+    """Save the inverted index as JSON, atomically.
+
+    Writes the serialised payload to a sibling ``<path>.tmp`` file
+    first, then replaces the destination via :func:`os.replace`.
+    ``os.replace`` is atomic on POSIX (``rename(2)``) and Windows
+    (``MoveFileExW`` with ``MOVEFILE_REPLACE_EXISTING``), so after
+    this function returns the file at ``path`` is either the new
+    content in full or, if any step before the replace fails, the
+    previous content untouched. A crash between write and replace
+    leaves a ``.tmp`` orphan but never corrupts ``index.json``.
+
+    This matters for the search tool's recovery story: a power loss
+    or Ctrl+C during ``build`` previously left ``data/index.json``
+    half-written, which then made ``load`` raise schema errors on
+    the next run. With atomic write, ``load`` either gets the prior
+    good index or (on first ever build) ``FileNotFoundError`` —
+    both recoverable states, neither a corrupt-byte trap.
+    """
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -177,7 +200,14 @@ def save_index(index: Index, path: str | Path = "data/index.json") -> None:
         },
         "tokenizer_config": asdict(index.tokenizer_config),
     }
-    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    serialised = json.dumps(payload, indent=2, sort_keys=True)
+
+    # Same parent directory so os.replace is a rename (cheap, atomic);
+    # crossing filesystems would degrade to copy+unlink and forfeit
+    # the atomicity guarantee.
+    tmp_path = output_path.with_name(output_path.name + ".tmp")
+    tmp_path.write_text(serialised, encoding="utf-8")
+    os.replace(tmp_path, output_path)
 
 
 def load_index(path: str | Path = "data/index.json") -> Index:

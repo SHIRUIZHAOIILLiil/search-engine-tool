@@ -16,7 +16,7 @@ layer.
 from __future__ import annotations
 
 import math
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from src.indexer import Index
 
@@ -95,7 +95,11 @@ class BM25Ranker:
             posting = postings.get(doc_id)
             if not posting:
                 continue
-            tf = int(posting.get("frequency", 0))
+            # ``Posting`` is ``dict[str, object]`` to accommodate
+            # int frequencies and list positions in one mapping;
+            # cast preserves the int invariant for mypy without a
+            # TypedDict refactor (queued for v1.7.0 docs suite).
+            tf = cast(int, posting.get("frequency", 0))
             if tf == 0:
                 continue
             df = len(postings)
@@ -146,7 +150,8 @@ class TFIDFRanker:
             posting = postings.get(doc_id)
             if not posting:
                 continue
-            tf = int(posting.get("frequency", 0))
+            # See indexer.py / TFIDFRanker.score for the cast rationale.
+            tf = cast(int, posting.get("frequency", 0))
             df = len(postings)
             if df == 0:
                 continue

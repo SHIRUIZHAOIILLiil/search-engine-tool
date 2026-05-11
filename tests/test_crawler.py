@@ -1,8 +1,9 @@
 ﻿import unittest
-
 from unittest.mock import Mock, patch
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
 from src.robots import RobotsPolicy
@@ -318,9 +319,12 @@ class QuoteCrawlerTests(unittest.TestCase):
         self.assertEqual(waits, [6.0])
 
     def test_fetch_wraps_request_errors(self):
+        # The session is per-crawler from v1.3.0; patch its ``get`` to
+        # short-circuit the urllib3 retry machinery and surface the
+        # underlying RequestException as the user-facing CrawlerError.
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
 
-        with patch("src.crawler.requests.get", side_effect=requests.RequestException("network down")):
+        with patch.object(crawler._session, "get", side_effect=requests.RequestException("network down")):
             with self.assertRaises(CrawlerError):
                 crawler._fetch("https://quotes.toscrape.com/")
 
@@ -329,7 +333,7 @@ class QuoteCrawlerTests(unittest.TestCase):
         response.raise_for_status.side_effect = requests.HTTPError("500 error")
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
 
-        with patch("src.crawler.requests.get", return_value=response):
+        with patch.object(crawler._session, "get", return_value=response):
             with self.assertRaises(CrawlerError):
                 crawler._fetch("https://quotes.toscrape.com/")
 
@@ -339,7 +343,7 @@ class QuoteCrawlerTests(unittest.TestCase):
         response.raise_for_status = Mock()
         crawler = QuoteCrawler(start_url="https://quotes.toscrape.com/")
 
-        with patch("src.crawler.requests.get", return_value=response) as mock_get:
+        with patch.object(crawler._session, "get", return_value=response) as mock_get:
             crawler._fetch("https://quotes.toscrape.com/")
 
         _, kwargs = mock_get.call_args
@@ -430,11 +434,77 @@ class QuoteCrawlerTests(unittest.TestCase):
             user_agent="MyCustomBot/1.0",
         )
 
-        with patch("src.crawler.requests.get", return_value=response) as mock_get:
+        with patch.object(crawler._session, "get", return_value=response) as mock_get:
             crawler._fetch("https://quotes.toscrape.com/")
 
         _, kwargs = mock_get.call_args
         self.assertEqual(kwargs["headers"]["User-Agent"], "MyCustomBot/1.0")
+
+
+class CrawlerSessionAndRetryTests(unittest.TestCase):
+    """Session reuse and retry-adapter configuration added in v1.3.0.
+
+    These pin the contract that one ``requests.Session`` is created
+    per crawler (so TCP connections persist across fetches) and that
+    a urllib3-backed retry adapter is mounted on both HTTP schemes
+    with the documented policy.
+    """
+
+    def test_crawler_owns_a_single_requests_session(self):
+        crawler = QuoteCrawler(start_url="https://example.com/")
+
+        self.assertIsInstance(crawler._session, requests.Session)
+
+    def test_session_has_retry_adapter_mounted_on_both_schemes(self):
+        crawler = QuoteCrawler(start_url="https://example.com/")
+
+        http_adapter = crawler._session.get_adapter("http://example.com/")
+        https_adapter = crawler._session.get_adapter("https://example.com/")
+
+        # Both schemes must use a retry-configured adapter — a missing
+        # http:// mount would leave plain-HTTP requests unprotected
+        # while https:// retries, an asymmetry that would silently
+        # confuse the operator.
+        for adapter in (http_adapter, https_adapter):
+            with self.subTest(adapter=adapter):
+                self.assertIsInstance(adapter, HTTPAdapter)
+                retry = adapter.max_retries
+                self.assertIsInstance(retry, Retry)
+                self.assertEqual(retry.total, 3)
+                # status_forcelist may be tuple/list/frozenset depending
+                # on urllib3 version; coerce to set for comparison.
+                self.assertEqual(set(retry.status_forcelist or ()), {502, 503, 504})
+                self.assertEqual(retry.backoff_factor, 0.5)
+
+    def test_retry_total_can_be_overridden_via_init(self):
+        # Tests can drop retries to 0 to keep failure cases fast.
+        crawler = QuoteCrawler(
+            start_url="https://example.com/",
+            max_retries=0,
+            retry_backoff_factor=0.0,
+        )
+        adapter = crawler._session.get_adapter("https://example.com/")
+
+        self.assertEqual(adapter.max_retries.total, 0)
+        self.assertEqual(adapter.max_retries.backoff_factor, 0.0)
+
+    def test_session_get_invoked_across_multiple_fetches_reuses_the_same_session(self):
+        # Verifies the "session is created once, used many times"
+        # contract end to end — multiple _fetch calls all route
+        # through the same Session.get.
+        response = Mock()
+        response.text = "<html></html>"
+        response.raise_for_status = Mock()
+        crawler = QuoteCrawler(start_url="https://example.com/")
+
+        with patch.object(crawler._session, "get", return_value=response) as mock_get:
+            crawler._fetch("https://example.com/a")
+            crawler._fetch("https://example.com/b")
+            crawler._fetch("https://example.com/c")
+
+        self.assertEqual(mock_get.call_count, 3)
+        # Every call used the same Session instance — there is only
+        # one mock_get, bound to one session.
 
 
 if __name__ == "__main__":

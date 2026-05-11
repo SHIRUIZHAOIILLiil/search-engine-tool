@@ -1,7 +1,8 @@
 import json
 import unittest
-
+from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from src.crawler import CrawledPage
 from src.indexer import INDEX_VERSION, Index, build_index, load_index, save_index
@@ -330,6 +331,101 @@ class IndexerTests(unittest.TestCase):
 
             with self.assertRaises(FileNotFoundError):
                 load_index(path)
+
+
+class SaveIndexAtomicityTests(unittest.TestCase):
+    """``save_index`` must not corrupt the destination on partial failure.
+
+    The threat model: a developer runs ``build``, Ctrl+C lands halfway
+    through serialisation, and the next ``load`` reads a half-written
+    file. The fix is to write a sibling ``.tmp`` file and only swap
+    it into place via :func:`os.replace` (atomic on POSIX + Windows).
+    These tests pin both halves of the contract — happy path still
+    works, failure path leaves the previous good file intact.
+    """
+
+    def _two_distinct_indexes(self):
+        # Two indexes whose serialised JSON differs in every key so a
+        # partial overwrite would be obvious if it occurred.
+        old_pages = [CrawledPage(url="page-old", text="alpha beta")]
+        new_pages = [CrawledPage(url="page-new", text="gamma delta epsilon")]
+        return build_index(old_pages), build_index(new_pages)
+
+    def test_save_writes_via_temp_file_and_replaces_atomically(self):
+        # Happy path: the temporary sibling appears during the write
+        # and is gone after os.replace. We assert both via a patched
+        # os.replace that observes the filesystem state right before
+        # the rename is committed.
+        index = build_index([CrawledPage(url="page-1", text="alpha beta")])
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "index.json"
+            tmp_seen: dict[str, bool] = {"tmp_existed_pre_replace": False}
+
+            real_replace = __import__("os").replace
+
+            def observing_replace(src, dst):
+                tmp_seen["tmp_existed_pre_replace"] = Path(src).exists()
+                return real_replace(src, dst)
+
+            with patch("src.indexer.os.replace", side_effect=observing_replace):
+                save_index(index, path)
+
+            self.assertTrue(
+                tmp_seen["tmp_existed_pre_replace"],
+                "save_index must stage content via a .tmp sibling before replace",
+            )
+            self.assertTrue(path.exists(), "destination must exist after save")
+            self.assertFalse(
+                path.with_name(path.name + ".tmp").exists(),
+                "successful save must clean up the .tmp sibling via replace",
+            )
+
+    def test_crash_during_replace_leaves_previous_file_intact(self):
+        # Failure path: a previously saved index sits at the path; a
+        # second save then crashes inside os.replace. The destination
+        # must still be the original content, byte-for-byte.
+        original_index, new_index = self._two_distinct_indexes()
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "index.json"
+            save_index(original_index, path)
+            original_bytes = path.read_bytes()
+
+            with patch(
+                "src.indexer.os.replace",
+                side_effect=OSError("simulated crash during atomic rename"),
+            ):
+                with self.assertRaises(OSError):
+                    save_index(new_index, path)
+
+            self.assertEqual(
+                path.read_bytes(),
+                original_bytes,
+                "atomic write contract: a failed save must not change the on-disk file",
+            )
+
+    def test_crash_during_tmp_write_leaves_previous_file_intact(self):
+        # Failure earlier in the pipeline — Path.write_text raises
+        # halfway through, e.g. ENOSPC. Same invariant: the original
+        # file is unchanged.
+        original_index, new_index = self._two_distinct_indexes()
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "index.json"
+            save_index(original_index, path)
+            original_bytes = path.read_bytes()
+
+            with patch.object(
+                Path,
+                "write_text",
+                side_effect=OSError("simulated ENOSPC during temp write"),
+            ):
+                with self.assertRaises(OSError):
+                    save_index(new_index, path)
+
+            self.assertEqual(
+                path.read_bytes(),
+                original_bytes,
+                "a temp-write failure must not touch the original file",
+            )
 
 
 if __name__ == "__main__":

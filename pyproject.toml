@@ -1,0 +1,138 @@
+# PEP 621 project metadata + tool configuration.
+#
+# This file is the single source of truth for:
+#   * project identity and runtime dependencies (`[project]`)
+#   * coverage thresholds and exclusions (`[tool.coverage]`)
+#   * lint and type-check configuration (`[tool.ruff]`, `[tool.mypy]`)
+#
+# CI consumes the [tool.*] sections directly; `requirements.txt` and
+# `requirements-dev.txt` are kept for the convenience of pip-based
+# install ergonomics (`pip install -r requirements.txt`) and are
+# regenerated, not edited by hand, when [project.dependencies] moves.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "search-engine-tool"
+version = "1.3.0"
+description = "COMP3011 Coursework 2 search engine tool for quotes.toscrape.com."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "SHIRUIZHAOIILLiil" }]
+keywords = ["information-retrieval", "search-engine", "inverted-index", "comp3011"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Indexing",
+]
+# Pinned floors mirror requirements.txt so a fresh
+# `pip install .` resolves the same versions CI tests against.
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "coverage>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/SHIRUIZHAOIILLiil/search-engine-tool"
+Repository = "https://github.com/SHIRUIZHAOIILLiil/search-engine-tool"
+Issues = "https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/issues"
+
+[tool.setuptools.packages.find]
+# Keeps `benchmarks/` out of any wheel — it is a development artefact
+# (synthetic-corpus tooling), not a runtime dependency.
+include = ["src*"]
+
+# --------------------------------------------------------------------- #
+# Coverage                                                              #
+# --------------------------------------------------------------------- #
+# Replaces the previous standalone .coveragerc. Coverage.py 7.0+
+# auto-discovers these tables when no .coveragerc is present.
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+# --------------------------------------------------------------------- #
+# Ruff (lint) — enforced from v1.3.0 sub-commit 2 onward.               #
+# --------------------------------------------------------------------- #
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "benchmarks/results",
+]
+
+[tool.ruff.lint]
+# Curated rule set: pyflakes (F), pycodestyle errors+warnings (E, W),
+# import sorting (I), and bug-bear (B) for the small set of real
+# correctness traps it catches. Deliberately excludes opinionated
+# style checks (D, ANN, etc.) — the project is small, hand-stylised,
+# and a wholesale style migration is out of scope.
+select = ["F", "E", "W", "I", "B"]
+ignore = [
+    # E501 already governed by `line-length`; ruff's pycodestyle has
+    # historical false-positives on URLs and tables.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately re-import the same names across classes and use
+# fixture-style `setUp` patterns; do not police that here.
+"tests/*" = ["F401"]
+
+# --------------------------------------------------------------------- #
+# Mypy (type check) — enforced from v1.3.0 sub-commit 3 onward.         #
+# --------------------------------------------------------------------- #
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+# Moderate strictness: catches real bugs without forcing a wholesale
+# refactor of the dict-of-object posting representation. The strict
+# settings below are turned on individually so each one carries an
+# explicit rationale and can be relaxed independently if a future
+# refactor changes the underlying data shapes.
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# Third-party libraries we use through narrow APIs and that ship no
+# type stubs in mypy 2.x. The mypy team's `types-requests` stub
+# package occasionally lags behind requests releases, so opting out
+# here is simpler than pinning the stub version separately.
+module = ["bs4", "bs4.*", "requests", "requests.*"]
+ignore_missing_imports = true

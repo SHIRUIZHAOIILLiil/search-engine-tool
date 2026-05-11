@@ -10,6 +10,8 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from src.parser import ParsedFields, parse_html_to_fields
 from src.robots import RobotsPolicy
@@ -55,6 +57,8 @@ class QuoteCrawler:
         robots_policy: RobotsPolicy | None = None,
         sleep: Callable[[float], None] = time.sleep,
         progress_callback: Callable[[str], None] | None = None,
+        max_retries: int = 3,
+        retry_backoff_factor: float = 0.5,
     ) -> None:
         # max_depth bounds how far the crawler descends from the seed URLs
         # (Lecture 9: defence against fictitious-resource traps that would
@@ -70,6 +74,39 @@ class QuoteCrawler:
         self.robots_policy = robots_policy if robots_policy is not None else RobotsPolicy.permissive()
         self._sleep = sleep
         self._progress_callback = progress_callback
+        # One Session for the lifetime of this crawler: reuses the TCP
+        # connection across fetches (saves the TLS handshake on every
+        # page after the first) and lets us mount a retry adapter so
+        # one transient 503 from the target site does not abort a
+        # whole crawl. Default backoff (0.5s, 1s, 2s) accumulates well
+        # below the 6-second politeness window.
+        self._session = self._build_session(max_retries, retry_backoff_factor)
+
+    @staticmethod
+    def _build_session(total_retries: int, backoff_factor: float) -> requests.Session:
+        """Build a Session with a urllib3-backed retry policy.
+
+        Only idempotent GETs are retried, only on the transient 5xx
+        family (502 / 503 / 504) — never on 4xx (those signal a client
+        bug, not a flaky network) and never on 500 (which usually
+        means a permanent server bug, not worth retrying). The retry
+        machinery lives entirely below ``raise_for_status``: by the
+        time control returns from ``session.get``, urllib3 has either
+        delivered a final response (which we then check) or raised a
+        :class:`requests.RequestException` that ``_fetch`` wraps.
+        """
+        session = requests.Session()
+        retry = Retry(
+            total=total_retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=(502, 503, 504),
+            allowed_methods=frozenset(["GET"]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
     def crawl(self, max_pages: int | None = None) -> list[CrawledPage]:
         """Crawl pages reachable from the start URL using BFS over the link graph.
@@ -122,7 +159,7 @@ class QuoteCrawler:
 
     def _fetch(self, url: str) -> str:
         try:
-            response = requests.get(
+            response = self._session.get(
                 url,
                 timeout=self.timeout,
                 headers={"User-Agent": self.user_agent},
@@ -158,7 +195,16 @@ class QuoteCrawler:
         seen: set[str] = set()
         links: list[str] = []
         for anchor in soup.select("a[href]"):
-            href = (anchor.get("href") or "").strip()
+            # BeautifulSoup's ``Tag.get`` may return a multi-valued
+            # ``AttributeValueList`` for HTML attributes that allow
+            # space-separated values (``class``, ``rel``, …). Anchor
+            # ``href`` is single-valued in practice, but the static
+            # type union forces us to narrow before calling ``str``
+            # methods — narrowing also drops the ``None`` arm cleanly.
+            raw_href = anchor.get("href")
+            if not isinstance(raw_href, str):
+                continue
+            href = raw_href.strip()
             if not href:
                 continue
             absolute, _, _ = urljoin(base_url, href).partition("#")

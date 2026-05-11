@@ -119,8 +119,15 @@ class TokenizerConfigTests(unittest.TestCase):
         # Equality and hash by value.
         self.assertEqual(a, b)
         self.assertEqual(hash(a), hash(b))
-        # And: mutation raises.
-        with self.assertRaises(Exception):
+        # And: mutation raises. ``@dataclass(frozen=True)`` raises
+        # ``dataclasses.FrozenInstanceError`` (a subclass of
+        # ``AttributeError``) on attribute assignment; assert against
+        # the specific exception rather than a bare ``Exception`` so
+        # ruff B017 stays satisfied and a future regression that
+        # silently allowed mutation (returning a different error)
+        # would also fail the test.
+        from dataclasses import FrozenInstanceError
+        with self.assertRaises(FrozenInstanceError):
             a.apply_stemming = False  # type: ignore[misc]
 
 

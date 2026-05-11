@@ -27,7 +27,6 @@ from src.retrieval import (
 )
 from src.search import find_pages
 
-
 N_PAGES = 500
 VOCAB_SIZE = 200
 TOKENS_PER_PAGE = (30, 100)  # inclusive range
