@@ -10,7 +10,7 @@ from pathlib import Path
 from src.crawler import DEFAULT_USER_AGENT, CrawlerError, QuoteCrawler
 from src.indexer import Index, build_index, load_index, save_index
 from src.robots import RobotsPolicy
-from src.search import find_pages, find_phrase, print_word
+from src.search import find_pages, find_phrase, format_did_you_mean, print_word
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INDEX_PATH = PROJECT_ROOT / "data" / "index.json"
@@ -113,14 +113,24 @@ def handle_command(raw_command: str, index: Index) -> Index:
         # matching. Every other shape (one bareword, multiple words)
         # stays on the conjunctive AND path the brief specifies.
         if len(args) == 1 and " " in args[0]:
-            results = find_phrase(index, args[0])
+            query_text = args[0]
+            results = find_phrase(index, query_text)
         else:
-            results = find_pages(index, " ".join(args))
+            query_text = " ".join(args)
+            results = find_pages(index, query_text)
         if results:
             for url in results:
                 print(url)
         else:
             print("No matching pages found.")
+            # Offer a spelling-correction hint only when the query
+            # contains at least one token the index does not know
+            # AND a near-neighbour exists. Both checks live inside
+            # format_did_you_mean; None means "nothing useful to
+            # say, stay silent".
+            hint = format_did_you_mean(index, query_text)
+            if hint is not None:
+                print(hint)
         return index
 
     raise ValueError(f"Unknown command: {command}")

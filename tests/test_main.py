@@ -106,6 +106,80 @@ class MainCommandTests(unittest.TestCase):
         self.assertEqual(returned_index, Index())
         self.assertIn("No matching pages found.", output.getvalue())
 
+    def test_find_command_prints_did_you_mean_for_typo(self):
+        # Indexed vocabulary contains "indifference"; the user typed
+        # "indiference" (one missing 'f'). The CLI must surface the
+        # "Did you mean" hint after the zero-results line.
+        index = Index(
+            documents={0: "page-1"},
+            postings={
+                "indifference": {0: {"frequency": 1, "positions": [0]}},
+            },
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find indiference", index)
+
+        text = output.getvalue()
+        self.assertIn("No matching pages found.", text)
+        self.assertIn("Did you mean: indifference?", text)
+
+    def test_find_command_suppresses_did_you_mean_when_query_is_valid(self):
+        # Both tokens are in the vocabulary — zero results here is a
+        # strict-AND miss, not a typo. A "did you mean" hint would
+        # mislead, so it must be suppressed.
+        index = Index(
+            documents={0: "page-1", 1: "page-2"},
+            postings={
+                "good": {0: {"frequency": 1, "positions": [0]}},
+                "friends": {1: {"frequency": 1, "positions": [0]}},
+            },
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find good friends", index)
+
+        text = output.getvalue()
+        self.assertIn("No matching pages found.", text)
+        self.assertNotIn("Did you mean", text)
+
+    def test_find_command_suppresses_did_you_mean_when_no_candidate_exists(self):
+        # Unknown token but no near-neighbour in the vocabulary —
+        # nothing useful to suggest, stay silent.
+        index = Index(
+            documents={0: "page-1"},
+            postings={
+                "indifference": {0: {"frequency": 1, "positions": [0]}},
+            },
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find xyzqq", index)
+
+        text = output.getvalue()
+        self.assertIn("No matching pages found.", text)
+        self.assertNotIn("Did you mean", text)
+
+    def test_find_command_did_you_mean_also_fires_for_phrase_mode(self):
+        # The quoted-string phrase path uses the same zero-result
+        # handler, so the suggestion hint must surface there too.
+        index = Index(
+            documents={0: "page-1"},
+            postings={
+                "indifference": {0: {"frequency": 1, "positions": [0]}},
+            },
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command('find "indiference"', index)
+
+        text = output.getvalue()
+        self.assertIn("Did you mean: indifference?", text)
+
     def test_load_command_returns_loaded_index(self):
         loaded_index = Index(
             documents={0: "page-1"},

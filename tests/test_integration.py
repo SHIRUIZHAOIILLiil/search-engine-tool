@@ -14,11 +14,14 @@ The synthetic site mimics quotes.toscrape.com's structure (a quote, an
 also drive these tests.
 """
 
+import io
 import unittest
+from contextlib import redirect_stdout
 from tempfile import TemporaryDirectory
 
 from src.crawler import QuoteCrawler
 from src.indexer import build_index, load_index, save_index
+from src.main import handle_command
 from src.search import find_pages, find_phrase, print_word
 
 
@@ -145,6 +148,82 @@ class FullPipelineTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertGreaterEqual(int(posting["frequency"]), 1)
                 self.assertIsInstance(posting["positions"], list)
+
+
+class DidYouMeanPipelineTests(unittest.TestCase):
+    """End-to-end coverage of the v1.2.0 spelling-correction hint.
+
+    Unit tests in ``test_search.py`` and ``test_main.py`` already pin
+    the suggestion logic against hand-built indices. The tests here
+    take the *real* pipeline — stub crawl, parse, build, save, load,
+    handle_command — and verify the hint surfaces on a corpus the
+    user could plausibly produce with the brief's ``build`` command.
+    """
+
+    def test_typo_in_unquoted_query_surfaces_did_you_mean(self):
+        # "frends" is one insertion away from "friends" (which appears
+        # in the page-1 quote text). The full crawler-to-CLI pipeline
+        # must catch that and emit the reformulated query.
+        pages = _make_crawler().crawl()
+        index = build_index(pages)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find frends", index)
+
+        text = output.getvalue()
+        self.assertIn("No matching pages found.", text)
+        self.assertIn("Did you mean: friends?", text)
+
+    def test_typo_in_phrase_query_surfaces_did_you_mean(self):
+        # Quoted phrases route through find_phrase; the zero-result
+        # handler is shared with the conjunctive path, so the hint
+        # must also fire here.
+        pages = _make_crawler().crawl()
+        index = build_index(pages)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command('find "good frends"', index)
+
+        text = output.getvalue()
+        self.assertIn("No matching pages found.", text)
+        self.assertIn("Did you mean: good friends?", text)
+
+    def test_did_you_mean_survives_save_load_roundtrip(self):
+        # The hint depends on the vocabulary stored in ``Index.postings``.
+        # Round-tripping through JSON must not change the vocabulary —
+        # if it did, the suggestion would silently degrade after a
+        # ``load`` command and we would never notice without this test.
+        pages = _make_crawler().crawl()
+        index = build_index(pages)
+
+        with TemporaryDirectory() as temporary_directory:
+            path = f"{temporary_directory}/index.json"
+            save_index(index, path)
+            loaded = load_index(path)
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            handle_command("find frends", loaded)
+
+        self.assertIn("Did you mean: friends?", output.getvalue())
+
+    def test_valid_zero_result_query_stays_silent(self):
+        # AND filter has zero results because no page contains both
+        # "good" and "shakespeare" — both tokens are legitimate, so
+        # the CLI must NOT print "Did you mean" (that would imply
+        # the user typo'd, which they did not).
+        pages = _make_crawler().crawl()
+        index = build_index(pages)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            handle_command("find good shakespeare", index)
+
+        text = output.getvalue()
+        self.assertIn("No matching pages found.", text)
+        self.assertNotIn("Did you mean", text)
 
 
 if __name__ == "__main__":
