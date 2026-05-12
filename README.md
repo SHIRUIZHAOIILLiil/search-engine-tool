@@ -538,8 +538,18 @@ python -m benchmarks.run_benchmarks --sizes 500,5000 --reps 10
 Results land in [`benchmarks/results/`](benchmarks/results/) as three
 co-timestamped artefacts: a `.json` file (full data, machine-readable,
 with run metadata), a `.csv` file (flat schema for Excel / pandas),
-and a `.md` file (report-ready tables). All three are gitignored —
-they are reproducible from the runner.
+and a `.md` file (report-ready tables). Per-run artefacts are
+gitignored — they are reproducible from the runner.
+
+Curated headline reports live alongside them as `*-summary.md`
+files, which **are** tracked in the repo so the README's complexity
+claims can be cross-checked without first running anything:
+
+* [`suggest-benchmark-summary.md`](benchmarks/results/suggest-benchmark-summary.md)
+  — BK-tree vs length-pruned linear scan on clustered and
+  uniform-random vocabularies (the v1.6.0 receipt; clustered
+  n=5000 shows BK-tree ~2× faster, uniform-random shows the
+  failure mode within 3 % of linear).
 
 ### Reading the output
 
@@ -738,9 +748,11 @@ video demonstration:
   so there's no actual duplication in practice.
 - **`build_index` is batch-only.** Re-running `build` rebuilds from
   scratch; there is no incremental update path.
-- **`save_index` is not atomic.** A crash mid-write leaves a partial
-  JSON file. The loader rejects it via the version / schema check
-  rather than silently producing wrong results.
+- **`save_index` is atomic** via a sibling `.tmp` file plus
+  `os.replace` (v1.3.0), so a crash mid-write never corrupts
+  `data/index.json` — but a crash mid-`build` still discards every
+  page collected so far rather than rolling progress forward.
+  Recoverable, not incremental.
 - **The Porter stemmer is Step 1 only.** Steps 2 – 5 of Porter's
   original algorithm (derivational suffixes such as `-ization`,
   `-fulness`) are omitted; Lecture 11 notes English stemming
