@@ -218,11 +218,15 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Benchmark results — keep the directory (via .gitkeep) but exclude
-# generated artefacts; results are reproducible from the runner.
+# generated artefacts; results are reproducible from the runner. The
+# hand-written `*-summary.md` reports are an exception: they carry
+# narrative + methodology and stay in the repo as the canonical
+# benchmark receipt the README links to.
 benchmarks/results/*.json
 benchmarks/results/*.csv
 benchmarks/results/*.md
 !benchmarks/results/.gitkeep
+!benchmarks/results/*-summary.md
 
 # Generated API documentation — pdoc output is reproducible from
 # the docstrings via scripts/build_api_docs.py; no value in
