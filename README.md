@@ -1,7 +1,7 @@
 # Search Engine Tool
 
 [![CI](https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/SHIRUIZHAOIILLiil/search-engine-tool/actions/workflows/ci.yml)
-![Coverage](https://img.shields.io/badge/coverage-92.5%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-94%25-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 
 Coursework 2 project for **COMP3011 Web Services and Web Data**.
@@ -34,7 +34,7 @@ The tool crawls [`https://quotes.toscrape.com/`](https://quotes.toscrape.com/), 
 - **Type-safe core** — `Posting` and `FieldStats` are `TypedDict`s (v1.7.0), so the integer frequency and list positions carry their types through to mypy without runtime casts. Runtime layout and JSON serialisation are unchanged.
 - **Four CI gates** — ruff lint, mypy type check, pdoc docstring smoke build, and the test suite all run on every push/PR; coverage must stay above 85 %.
 - **Generated API docs** — `python scripts/build_api_docs.py` produces a browsable `docs/api/index.html` from the source docstrings via [pdoc](https://pdoc.dev/); the CI smoke build fails the pipeline if any docstring fails to parse.
-- **370 tests at 93 %+ coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
+- **370 tests at 94 %+ coverage** spanning unit, integration, performance, and property layers, run on Python 3.10 / 3.11 / 3.12 in CI.
 
 ---
 
@@ -164,7 +164,7 @@ At the `>` prompt:
 
 | Command | Effect |
 |---|---|
-| `build` | Fetch `robots.txt`, BFS-crawl the site (~1 min), build the index, save to `data/index.json` |
+| `build` | Fetch `robots.txt`, BFS-crawl the site (~22 min for 214 pages × 6 s politeness), build the index, save to `data/index.json` |
 | `load` | Load a previously saved index |
 | `print <word>` | Print the posting list for one word |
 | `find <query>` | List pages containing every word in the query, ranked by TF-IDF relevance (conjunctive AND mode) |
@@ -221,7 +221,7 @@ After `build`, `data/index.json` looks like:
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "documents": {
     "0": "https://quotes.toscrape.com/",
     "1": "https://quotes.toscrape.com/page/2/"
@@ -249,7 +249,7 @@ After `build`, `data/index.json` looks like:
 }
 ```
 
-- **`version`** — schema sentinel (currently 4). `load` rejects files written under a different version and tells the user to rebuild.
+- **`version`** — schema sentinel (currently 5). `load` rejects files written under a different version and tells the user to rebuild.
 - **`documents`** — integer `doc_id` → URL. JSON forces string keys; the loader converts them back to `int`.
 - **`doc_lengths`** — `doc_id` → body token count, used by BM25's length-normalisation term.
 - **`postings`** — term → `doc_id` → posting. Each posting has body-level `frequency` / `positions` plus a sparse per-field breakdown (`title`, `quote_text`, `author`, `tag`) for future BM25F-style ranking.
@@ -657,7 +657,7 @@ for the implementation.
 python -m unittest discover
 ```
 
-The test suite currently runs **370 tests** with no warnings and reaches **93 %+ line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
+The test suite currently runs **370 tests** with no warnings and reaches **94 %+ line + branch coverage** of `src/` (the benchmark helpers under `benchmarks/` are exercised by `tests/test_benchmarks.py` and are not counted toward `src/` coverage).
 
 | File | Layer | Coverage |
 |---|---|---|
@@ -682,16 +682,20 @@ The test suite currently runs **370 tests** with no warnings and reaches **93 %+
 
 Every push to `main` and every pull request triggers
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml). The workflow
-runs **three gates in order, fail-fast** on a Python 3.10 / 3.11 / 3.12
+runs **four gates in order, fail-fast** on a Python 3.10 / 3.11 / 3.12
 matrix:
 
-1. **ruff lint** — `ruff check src/ tests/ benchmarks/` with the rule
-   set in `pyproject.toml` (pyflakes, pycodestyle, import sort, bugbear).
+1. **ruff lint** — `ruff check src/ tests/ benchmarks/ scripts/` with
+   the rule set in `pyproject.toml` (pyflakes, pycodestyle, import
+   sort, bugbear).
 2. **mypy type check** — moderate strictness configured in
    `pyproject.toml`; catches mismatched type annotations on every push.
-3. **Test suite under coverage** — full unit / integration / property /
+3. **pdoc smoke build** — runs `scripts/build_api_docs.py --smoke` to
+   verify every `src/` docstring parses cleanly; fails the pipeline if
+   any docstring is malformed.
+4. **Test suite under coverage** — full unit / integration / property /
    performance run, with a per-module report and a **fail-under-85 %
-   coverage gate** (current: 93 %+).
+   coverage gate** (current: 94 %+).
 
 A green CI badge above means the latest `main` commit clears all
 four gates (ruff lint, mypy type check, pdoc smoke build, and the
